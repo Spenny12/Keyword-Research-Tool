@@ -6,8 +6,8 @@ from pydantic import BaseModel
 from typing import List
 
 # --- UI Configuration ---
-st.set_page_config(page_title="Batch SEO Classifier", layout="wide")
-st.title("🚀 Batch SEO Intent Classifier")
+st.set_page_config(page_title="Candour SEO Classifier", layout="wide")
+st.title("SEO Intent Classifier")
 
 # --- Structured Output Definition ---
 class IntentResult(BaseModel):
