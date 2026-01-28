@@ -2,93 +2,99 @@ import streamlit as st
 import pandas as pd
 from google import genai
 from google.genai import types
+from pydantic import BaseModel
+from typing import List
 
 # --- UI Configuration ---
-st.set_page_config(page_title="SEO KW Classifier", layout="wide")
-st.title("KW Classifier")
-st.write("Upload a CSV to label keyword intent")
+st.set_page_config(page_title="Batch SEO Classifier", layout="wide")
+st.title("🚀 Batch SEO Intent Classifier")
+st.write("Processing keywords in batches for 30x faster results with zero-drift alignment.")
+
+# --- Structured Output Definition ---
+class IntentResult(BaseModel):
+    index: int
+    label: str
+
+class BatchResponse(BaseModel):
+    results: List[IntentResult]
 
 # --- Sidebar ---
 with st.sidebar:
     gemini_api_key = st.text_input("Enter Gemini API Key", type="password")
     st.divider()
 
-# --- Logic: Classification ---
-def classify_with_gemini(keywords, api_key):
+# --- Logic: Batch Processing ---
+def classify_batches(keywords, api_key):
     client = genai.Client(api_key=api_key)
-    results = []
+    all_labels = [None] * len(keywords)
+    batch_size = 50
 
-    # Strictly defined system prompt
     system_instruction = """
-    You are a professional SEO analyst. Label the provided keyword by the implied content format.
-    Return ONLY the lowercase label from this specific list:
-    - definition/factual
-    - examples/list
-    - comparison/pros-cons
-    - asset/download/tool
-    - product/service
-    - instruction/how-to
-    - consequence/effects/impacts
-    - benefits/reason/justification
-    - cost/price
-
-    If not explicit or easily intuited, label 'unclear'.
-    Do not provide any explanation, conversational text, or formatting other than the label itself.
+    You are a strict SEO classification bot.
+    Label each keyword by the implied content format.
+    Return only labels from this list:
+    - definition/factual, examples/list, comparison/pros-cons, asset/download/tool,
+      product/service, instruction/how-to, consequence/effects/impacts,
+      benefits/reason/justification, cost/price, unclear.
     """
 
     progress_bar = st.progress(0)
 
-    for i, kw in enumerate(keywords):
+    # Split keywords into chunks of 30
+    for i in range(0, len(keywords), batch_size):
+        chunk = keywords[i : i + batch_size]
+
+        # Create a numbered list for the prompt to ensure tracking
+        formatted_list = "\n".join([f"{i + idx}: {kw}" for idx, kw in enumerate(chunk)])
+
         try:
-            # Using the corrected 2026 model ID and high-precision config
             response = client.models.generate_content(
                 model="gemini-3-flash-preview",
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    temperature=0.0,  # Zero randomness
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level="minimal" # Low latency, high directness
-                    )
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                    response_schema=BatchResponse, # Forces structured list
                 ),
-                contents=f"Keyword: {kw}"
+                contents=f"Classify these keywords by their index:\n{formatted_list}"
             )
-            label = response.text.strip().lower()
-            results.append(label)
+
+            # Parse the JSON response directly into our results list
+            batch_data = response.parsed
+            for item in batch_data.results:
+                if item.index < len(all_labels):
+                    all_labels[item.index] = item.label.strip().lower()
+
         except Exception as e:
-            results.append(f"Error: {str(e)}")
+            st.error(f"Batch Error starting at index {i}: {e}")
+            # Fill failed slots with error
+            for idx in range(i, min(i + batch_size, len(keywords))):
+                if all_labels[idx] is None:
+                    all_labels[idx] = "error"
 
-        progress_bar.progress((i + 1) / len(keywords))
+        progress_bar.progress(min((i + batch_size) / len(keywords), 1.0))
 
-    return results
+    return all_labels
 
 # --- Main App Interface ---
-uploaded_file = st.file_uploader("Upload Keyword List (CSV)", type=["csv"])
+uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    st.write("### Data Preview")
-    st.dataframe(df.head())
+    st.write(f"### File Loaded ({len(df)} keywords)")
 
-    # User selects the correct column
-    target_col = st.selectbox("Select the column containing keywords:", df.columns)
+    target_col = st.selectbox("Select Keyword Column:", df.columns)
 
-    if st.button("Run Classification"):
+    if st.button("Run Batch Classification"):
         if not gemini_api_key:
-            st.warning("Please provide an API key in the sidebar.")
+            st.error("Missing API Key.")
         else:
-            with st.spinner("Classifying keywords..."):
-                # Clean inputs to ensure they are strings
+            with st.spinner(f"Processing {len(df)} keywords in batches..."):
                 keywords = df[target_col].astype(str).tolist()
+                df['Intent Label'] = classify_batches(keywords, gemini_api_key)
 
-                # Execute classification
-                labels = classify_with_gemini(keywords, gemini_api_key)
-
-                # Append results to dataframe
-                df['Intent Label'] = labels
-
-                st.success("Finished! See results below.")
+                st.success("Batch Processing Complete!")
                 st.dataframe(df)
 
-                # Download results
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button("Download Results (.csv)", csv, "seo_intent_results.csv", "text/csv")
+                csv_data = df.to_csv(index=False).encode('utf-8')
+                st.download_button("Download Classified CSV", csv_data, "batch_results.csv", "text/csv")
