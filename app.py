@@ -5,7 +5,7 @@ from google.genai import types
 
 # --- UI Configuration ---
 st.set_page_config(page_title="SEO Intent Classifier", layout="wide")
-st.title("Keyword Intent Classifier (CSV)")
+st.title("Keyword Intent Classifier")
 
 # --- Sidebar ---
 with st.sidebar:
@@ -15,39 +15,32 @@ with st.sidebar:
 
 # --- Logic ---
 def classify_with_gemini(keywords, api_key):
-    client = genai.Client(api_key=api_key)
+    try:
+        client = genai.Client(api_key=api_key)
+    except Exception as e:
+        st.error(f"Failed to initialize Client: {e}")
+        return ["Client Error"] * len(keywords)
+
     results = []
-
-    system_instruction = """
-    Label the keyword by the implied content format.
-    Return ONLY the lowercase label from this list:
-    - definition/factual
-    - examples/list
-    - comparison/pros-cons
-    - asset/download/tool
-    - product/service
-    - instruction/how-to
-    - consequence/effects/impacts
-    - benefits/reason/justification
-    - cost/price
-
-    If not explicit, label 'unclear'.
-    """
-
     progress_bar = st.progress(0)
+
     for i, kw in enumerate(keywords):
         try:
             response = client.models.generate_content(
                 model="gemini-3-flash",
                 config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=temperature
+                    system_instruction="Label the keyword intent.", # Shortened for test
+                    temperature=0.1
                 ),
                 contents=f"Keyword: {kw}"
             )
             results.append(response.text.strip().lower())
         except Exception as e:
-            results.append("error")
+            # THIS IS THE IMPORTANT PART:
+            # It will print the actual error message to your Streamlit screen
+            st.error(f"Error on keyword '{kw}': {e}")
+            results.append(f"Error: {type(e).__name__}")
+
         progress_bar.progress((i + 1) / len(keywords))
     return results
 
