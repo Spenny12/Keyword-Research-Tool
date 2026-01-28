@@ -8,7 +8,6 @@ from typing import List
 # --- UI Configuration ---
 st.set_page_config(page_title="Batch SEO Classifier", layout="wide")
 st.title("🚀 Batch SEO Intent Classifier")
-st.write("Processing keywords in batches for 30x faster results with zero-drift alignment.")
 
 # --- Structured Output Definition ---
 class IntentResult(BaseModel):
