@@ -1,29 +1,26 @@
 import streamlit as st
 import pandas as pd
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 # --- UI Configuration ---
 st.set_page_config(page_title="SEO Intent Classifier", layout="wide")
-st.title("🎯 Keyword Content Format Classifier")
-st.write("Upload a CSV/XLSX to categorize keyword intent for content strategy.")
+st.title("Keyword Intent Classifier (CSV)")
 
-# --- Sidebar: API Configuration ---
+# --- Sidebar ---
 with st.sidebar:
-    api_key = st.text_input("Enter OpenAI API Key", type="password")
-    model_choice = st.selectbox("Model", ["gpt-4o", "gpt-3.5-turbo"])
-    temperature = st.slider("Creativity (Temperature)", 0.0, 1.0, 0.1)
+    gemini_api_key = st.text_input("Enter Gemini API Key", type="password")
+    st.info("Using Gemini 3 Flash for high-speed categorisation.")
+    temperature = st.slider("Precision (0 = Strict, 1 = Creative)", 0.0, 1.0, 0.1)
 
-# --- Logic: Classification Function ---
-def classify_keywords(keywords, api_key, model):
-    client = OpenAI(api_key=api_key)
+# --- Logic ---
+def classify_with_gemini(keywords, api_key):
+    client = genai.Client(api_key=api_key)
     results = []
-    
-    # Updated Prompt for better LLM performance
-    system_prompt = """
-    You are an SEO expert. Label the provided keyword by the implied content format 
-    ideal for the intent/endpoint of the query. 
-    
-    Return ONLY the lowercase label from this specific list:
+
+    system_instruction = """
+    Label the keyword by the implied content format.
+    Return ONLY the lowercase label from this list:
     - definition/factual
     - examples/list
     - comparison/pros-cons
@@ -33,51 +30,55 @@ def classify_keywords(keywords, api_key, model):
     - consequence/effects/impacts
     - benefits/reason/justification
     - cost/price
-    
-    If the intent is not explicit or easily intuited, return 'unclear'.
+
+    If not explicit, label 'unclear'.
     """
 
     progress_bar = st.progress(0)
-    
     for i, kw in enumerate(keywords):
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Keyword: {kw}"}
-            ],
-            temperature=temperature
-        )
-        results.append(response.choices[0].message.content.strip().lower())
+        try:
+            response = client.models.generate_content(
+                model="gemini-3-flash",
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=temperature
+                ),
+                contents=f"Keyword: {kw}"
+            )
+            results.append(response.text.strip().lower())
+        except Exception as e:
+            results.append("error")
         progress_bar.progress((i + 1) / len(keywords))
-        
     return results
 
-# --- Main App Interface ---
-uploaded_file = st.file_誠("Upload Keyword List", type=["csv", "xlsx"])
+# --- File Handling ---
+uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"])
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-    
+    # No openpyxl engine needed for read_csv
+    df = pd.read_csv(uploaded_file)
+
     st.write("### Data Preview")
     st.dataframe(df.head())
-    
-    # Column selection
-    target_col = st.selectbox("Select the column containing keywords:", df.columns)
-    
-    if st.button("Run Classification"):
-        if not api_key:
-            st.error("Please add your API key in the sidebar.")
+
+    target_col = st.selectbox("Select the keyword column:", df.columns)
+
+    if st.button("Categorize Keywords"):
+        if not gemini_api_key:
+            st.error("Missing API Key.")
         else:
-            with st.spinner("Classifying..."):
-                keywords = df[target_col].tolist()
-                labels = classify_keywords(keywords, api_key, model_choice)
-                
-                df['Intent Label'] = labels
-                
-                st.success("Classification Complete!")
+            with st.spinner("Processing..."):
+                keywords = df[target_col].astype(str).tolist()
+                df['Intent Label'] = classify_with_gemini(keywords, gemini_api_key)
+
+                st.success("Done!")
                 st.dataframe(df)
-                
-                # Download button
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button("Download Classified CSV", csv, "classified_keywords.csv", "text/csv")
+
+                # Direct CSV Export
+                csv_data = df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download results",
+                    data=csv_data,
+                    file_name="classified_keywords.csv",
+                    mime="text/csv"
+                )
