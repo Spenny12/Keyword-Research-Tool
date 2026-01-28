@@ -12,9 +12,6 @@ st.write("Upload a CSV to label keyword intent")
 with st.sidebar:
     gemini_api_key = st.text_input("Enter Gemini API Key", type="password")
     st.divider()
-    st.info("**Model:** Gemini 3 Flash Preview")
-    st.info("**Temperature:** 0.0 (Locked)")
-    st.info("**Thinking:** Minimal (Locked)")
 
 # --- Logic: Classification ---
 def classify_with_gemini(keywords, api_key):
