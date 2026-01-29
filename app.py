@@ -34,7 +34,7 @@ def classify_batches(keywords, api_key):
     Return only labels from this list:
     - definition/factual, examples/list, comparison/pros-cons, asset/download/tool,
       product/service, instruction/how-to, consequence/effects/impacts,
-      benefits/reason/justification, cost/price, unclear.
+      benefits/reason/justification, best/review, cost/price, unclear.
     """
 
     progress_bar = st.progress(0)
