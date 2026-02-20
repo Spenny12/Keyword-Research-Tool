@@ -134,7 +134,7 @@ if uploaded_file:
             st.code(st.session_state.ai_suggestions)
             st.markdown("---")
 
-    if st.button("🚀 Run Full Classification"):
+    if st.button("Run Full Classification"):
         if not api_key:
             st.error("Missing API Key.")
         elif use_custom and not topics_area:
