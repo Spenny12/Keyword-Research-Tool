@@ -90,13 +90,13 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
 # --- Sidebar ---
 with st.sidebar:
     api_key = st.text_input("Gemini API Key", type="password")
-    use_custom = st.checkbox("Enable Custom Categorization")
+    use_custom = st.checkbox("Enable Custom Categorisation")
 
     topics_input = ""
     subtopics_input = ""
 
     if use_custom:
-        st.markdown("### 🧠 Topic Strategy")
+        st.markdown("### Topic Strategy")
         topics_input = st.text_area("Primary Topics (Required)", placeholder="E.g. SEO, Content, Technical")
         subtopics_input = st.text_area("Subtopics (Optional)", placeholder="E.g. Backlinks, Site Speed")
 
