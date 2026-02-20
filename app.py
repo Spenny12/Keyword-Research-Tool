@@ -7,7 +7,7 @@ from typing import List, Optional
 
 # --- UI Configuration ---
 st.set_page_config(page_title="SEO Classifier", layout="wide")
-st.title("SEO Classifier & Topic Suggester")
+st.title("Classifier & Topic Suggester")
 
 # --- Structured Output Definition ---
 class IntentResult(BaseModel):
@@ -20,7 +20,6 @@ class BatchResponse(BaseModel):
     results: List[IntentResult]
 
 # --- Session State Initialization ---
-# This acts as our "Sticky Note" that survives app refreshes
 if "ai_suggestions" not in st.session_state:
     st.session_state.ai_suggestions = ""
 
@@ -91,14 +90,19 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
 # --- Sidebar: Configuration & Custom Inputs ---
 with st.sidebar:
     api_key = st.text_input("Gemini API Key", type="password")
-    use_custom = st.checkbox("Enable Custom Categorization")
+    use_custom = st.checkbox("Enable Custom Categorisation")
 
-    # We use a FORM here so that typing doesn't trigger a refresh every 2 seconds
-    with st.form("category_form"):
-        st.write("### Define Your Strategy")
-        topics_area = st.text_area("Primary Topics (Required)", height=150)
-        subtopics_area = st.text_area("Subtopics (Optional)", height=150)
-        submit_categories = st.form_submit_button("Save Categories")
+    # These variables need to be initialized so the main app can read them even if hidden
+    topics_area = ""
+    subtopics_area = ""
+
+    # HIDE/SHOW LOGIC: Only show the form if the checkbox is True
+    if use_custom:
+        with st.form("category_form"):
+            st.write("### Define Your Strategy")
+            topics_area = st.text_area("Primary Topics (Required)", height=150, help="Paste topics here.")
+            subtopics_area = st.text_area("Subtopics (Optional)", height=150, help="Paste subtopics here.")
+            st.form_submit_button("Save Strategy")
 
 # --- Main App Interface ---
 uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"])
@@ -116,7 +120,6 @@ if uploaded_file:
                 else:
                     with st.spinner("Analysing keyword sample..."):
                         sample = df[target_col].sample(n=min(50, len(df))).astype(str).tolist()
-                        # Save to session state so it PERSISTS
                         st.session_state.ai_suggestions = suggest_topics(sample, api_key)
 
         with col2:
@@ -124,27 +127,26 @@ if uploaded_file:
                 st.session_state.ai_suggestions = ""
                 st.rerun()
 
-        # This block checks the 'Sticky Note' (session_state) instead of the button click
         if st.session_state.ai_suggestions:
             st.markdown("---")
-            st.markdown("### 💡 AI Recommended Topics & Subtopics")
-            st.info("Copy these and paste them into the sidebar form. Then click 'Save Categories'.")
+            st.markdown("### AI Recommended Topics & Subtopics")
+            st.info("Copy these and paste them into the sidebar fields. Click 'Save Strategy' to lock them in.")
             st.code(st.session_state.ai_suggestions)
             st.markdown("---")
 
-    if st.button("Run Full Classification"):
+    if st.button("🚀 Run Full Classification"):
         if not api_key:
             st.error("Missing API Key.")
         elif use_custom and not topics_area:
-            st.error("Topics are required when Custom Categorisation is enabled.")
+            st.error("Please provide topics in the sidebar form.")
         else:
-            with st.spinner("Classifying in high-precision batches..."):
+            with st.spinner("Classifying in batches..."):
                 results = classify_batches(df[target_col].tolist(), api_key, use_custom, topics_area, subtopics_area)
                 res_df = pd.DataFrame(results)
                 df['Intent'] = res_df['Intent']
                 if use_custom:
                     df['Topic'], df['Subtopic'] = res_df['Topic'], res_df['Subtopic']
 
-                st.success("Classification Complete!")
+                st.success("Complete!")
                 st.dataframe(df)
-                st.download_button("Download Results (.csv)", df.to_csv(index=False), "categorised_seo_data.csv", "text/csv")
+                st.download_button("📥 Download Results", df.to_csv(index=False), "results.csv", "text/csv")
