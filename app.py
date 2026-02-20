@@ -3,97 +3,132 @@ import pandas as pd
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
+import random
 
 # --- UI Configuration ---
-st.set_page_config(page_title="Candour SEO Classifier", layout="wide")
-st.title("SEO Intent Classifier")
+st.set_page_config(page_title="Pro SEO Classifier", layout="wide")
+st.title("🚀 Pro SEO Classifier & Topic Suggester")
 
 # --- Structured Output Definition ---
 class IntentResult(BaseModel):
     index: int
     label: str
+    topic: Optional[str] = "N/A"
+    subtopic: Optional[str] = "N/A"
 
 class BatchResponse(BaseModel):
     results: List[IntentResult]
 
-# --- Sidebar ---
-with st.sidebar:
-    gemini_api_key = st.text_input("Enter Gemini API Key", type="password")
-    st.divider()
-
-# --- Logic: Batch Processing ---
-def classify_batches(keywords, api_key):
+# --- Logic: Topic Suggester ---
+def suggest_topics(sample_keywords, api_key):
     client = genai.Client(api_key=api_key)
-    all_labels = [None] * len(keywords)
-    batch_size = 50
+    prompt = f"""
+    Analyze these keywords and suggest a list of 5-8 high-level TOPICS
+    and a list of 10-15 granular SUBTOPICS that could categorize them.
+
+    Keywords: {", ".join(sample_keywords)}
+
+    Format your response exactly like this:
+    TOPICS:
+    Topic 1
+    Topic 2
+
+    SUBTOPICS:
+    Subtopic 1
+    Subtopic 2
+    """
+    try:
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            config=types.GenerateContentConfig(temperature=0.7), # Higher temp for brainstorming
+            contents=prompt
+        )
+        return response.text
+    except Exception as e:
+        return f"Error generating suggestions: {e}"
+
+# --- Logic: Batch Classification (Locked at 0.0 Temperature) ---
+def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
+    client = genai.Client(api_key=api_key)
+    all_data = []
+    batch_size = 30
 
     system_instruction = """
-    You are a strict SEO classification bot.
-    Label each keyword by the implied content format.
-    Return only labels from this list:
-    - definition/factual, examples/list, comparison/pros-cons, asset/download/tool,
-      product/service, instruction/how-to, consequence/effects/impacts,
-      benefits/reason/justification, best/review, cost/price, unclear.
+    You are a strict SEO bot. Label keywords by intent (definition/factual, examples/list,
+    comparison/pros-cons, asset/download/tool, product/service, instruction/how-to,
+    consequence/effects/impacts, benefits/reason/justification, cost/price, unclear).
     """
 
-    progress_bar = st.progress(0)
+    if custom_mode:
+        system_instruction += f"\nTOPICS:\n{topics}\nSUBTOPICS:\n{subtopics}\n"
+        system_instruction += "Assign exactly one Topic and one Subtopic. Use 'N/A' if no fit."
 
-    # Split keywords into chunks of 30
+    progress_bar = st.progress(0)
     for i in range(0, len(keywords), batch_size):
         chunk = keywords[i : i + batch_size]
-
-        # Create a numbered list for the prompt to ensure tracking
-        formatted_list = "\n".join([f"{i + idx}: {kw}" for idx, kw in enumerate(chunk)])
+        formatted = "\n".join([f"{i+idx}: {kw}" for idx, kw in enumerate(chunk)])
 
         try:
-            response = client.models.generate_content(
+            res = client.models.generate_content(
                 model="gemini-3-flash-preview",
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    temperature=0.0,
+                    temperature=0.0, # High precision
                     response_mime_type="application/json",
-                    response_schema=BatchResponse, # Forces structured list
+                    response_schema=BatchResponse
                 ),
-                contents=f"Classify these keywords by their index:\n{formatted_list}"
+                contents=f"Classify:\n{formatted}"
             )
-
-            # Parse the JSON response directly into our results list
-            batch_data = response.parsed
-            for item in batch_data.results:
-                if item.index < len(all_labels):
-                    all_labels[item.index] = item.label.strip().lower()
-
-        except Exception as e:
-            st.error(f"Batch Error starting at index {i}: {e}")
-            # Fill failed slots with error
-            for idx in range(i, min(i + batch_size, len(keywords))):
-                if all_labels[idx] is None:
-                    all_labels[idx] = "error"
-
+            for item in res.parsed.results:
+                all_data.append({"Intent": item.label, "Topic": item.topic, "Subtopic": item.subtopic})
+        except:
+            for _ in chunk: all_data.append({"Intent": "error", "Topic": "error", "Subtopic": "error"})
         progress_bar.progress(min((i + batch_size) / len(keywords), 1.0))
+    return all_data
 
-    return all_labels
+# --- Sidebar ---
+with st.sidebar:
+    api_key = st.text_input("Gemini API Key", type="password")
+    use_custom = st.checkbox("Enable Custom Categorization")
 
-# --- Main App Interface ---
-uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"])
+    topics_input = ""
+    subtopics_input = ""
+
+    if use_custom:
+        st.markdown("### 🧠 Topic Strategy")
+        topics_input = st.text_area("Primary Topics (Required)", placeholder="E.g. SEO, Content, Technical")
+        subtopics_input = st.text_area("Subtopics (Optional)", placeholder="E.g. Backlinks, Site Speed")
+
+# --- Main App ---
+uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    st.write(f"### File Loaded ({len(df)} keywords)")
+    target_col = st.selectbox("Keyword Column", df.columns)
 
-    target_col = st.selectbox("Select Keyword Column:", df.columns)
+    # NEW: The Suggester UI
+    if use_custom:
+        if st.button("✨ Suggest Topics from My Data"):
+            if not api_key:
+                st.error("Enter API Key first.")
+            else:
+                # Randomly sample 50 keywords for the AI to "read"
+                sample = df[target_col].sample(n=min(50, len(df))).astype(str).tolist()
+                suggestions = suggest_topics(sample, api_key)
+                st.markdown("### 💡 AI Recommendations")
+                st.info("Copy and paste these into the text boxes in the sidebar.")
+                st.code(suggestions)
 
-    if st.button("Run Batch Classification"):
-        if not gemini_api_key:
-            st.error("Missing API Key.")
+    if st.button("Run Full Classification"):
+        if not api_key: st.error("Missing API Key.")
         else:
-            with st.spinner(f"Processing {len(df)} keywords in batches..."):
-                keywords = df[target_col].astype(str).tolist()
-                df['Intent Label'] = classify_batches(keywords, gemini_api_key)
+            results = classify_batches(df[target_col].tolist(), api_key, use_custom, topics_input, subtopics_input)
+            res_df = pd.DataFrame(results)
+            df['Intent'] = res_df['Intent']
+            if use_custom:
+                df['Topic'], df['Subtopic'] = res_df['Topic'], res_df['Subtopic']
 
-                st.success("Batch Processing Complete!")
-                st.dataframe(df)
-
-                csv_data = df.to_csv(index=False).encode('utf-8')
-                st.download_button("Download Classified CSV", csv_data, "batch_results.csv", "text/csv")
+            st.success("Complete!")
+            st.dataframe(df)
+            st.download_button("📥 Download CSV", df.to_csv(index=False), "results.csv", "text/csv")
