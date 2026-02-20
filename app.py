@@ -4,10 +4,9 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 from typing import List, Optional
-import random
 
 # --- UI Configuration ---
-st.set_page_config(page_title="Pro SEO Classifier", layout="wide")
+st.set_page_config(page_title="SEO Classifier", layout="wide")
 st.title("SEO Classifier & Topic Suggester")
 
 # --- Structured Output Definition ---
@@ -20,49 +19,50 @@ class IntentResult(BaseModel):
 class BatchResponse(BaseModel):
     results: List[IntentResult]
 
+# --- Session State Initialization ---
+# This acts as our "Sticky Note" that survives app refreshes
+if "ai_suggestions" not in st.session_state:
+    st.session_state.ai_suggestions = ""
+
 # --- Logic: Topic Suggester ---
 def suggest_topics(sample_keywords, api_key):
     client = genai.Client(api_key=api_key)
     prompt = f"""
-    Analyze these keywords and suggest a list of 5-8 high-level TOPICS
-    and a list of 10-15 granular SUBTOPICS that could categorize them.
-
+    Analyse these keywords and suggest 5-8 primary TOPICS and 10-15 granular SUBTOPICS.
     Keywords: {", ".join(sample_keywords)}
 
-    Format your response exactly like this:
+    Format your response clearly:
     TOPICS:
-    Topic 1
-    Topic 2
+    (One per line)
 
     SUBTOPICS:
-    Subtopic 1
-    Subtopic 2
+    (One per line)
     """
     try:
         response = client.models.generate_content(
             model="gemini-3-flash-preview",
-            config=types.GenerateContentConfig(temperature=0.7), # Higher temp for brainstorming
+            config=types.GenerateContentConfig(temperature=0.7),
             contents=prompt
         )
         return response.text
     except Exception as e:
-        return f"Error generating suggestions: {e}"
+        return f"Error: {e}"
 
-# --- Logic: Batch Classification (Locked at 0.0 Temperature) ---
+# --- Logic: Batch Classification ---
 def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     client = genai.Client(api_key=api_key)
     all_data = []
     batch_size = 30
 
     system_instruction = """
-    You are a strict SEO bot. Label keywords by intent (definition/factual, examples/list,
+    You are a strict SEO analyst. Label intent: definition/factual, examples/list,
     comparison/pros-cons, asset/download/tool, product/service, instruction/how-to,
-    consequence/effects/impacts, benefits/reason/justification, cost/price, unclear).
+    consequence/effects/impacts, benefits/reason/justification, cost/price, unclear.
     """
 
     if custom_mode:
         system_instruction += f"\nTOPICS:\n{topics}\nSUBTOPICS:\n{subtopics}\n"
-        system_instruction += "Assign exactly one Topic and one Subtopic. Use 'N/A' if no fit."
+        system_instruction += "Assign one Topic and one Subtopic from the lists. Use 'N/A' if no fit."
 
     progress_bar = st.progress(0)
     for i in range(0, len(keywords), batch_size):
@@ -74,9 +74,10 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
                 model="gemini-3-flash-preview",
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    temperature=0.0, # High precision
+                    temperature=0.0,
                     response_mime_type="application/json",
-                    response_schema=BatchResponse
+                    response_schema=BatchResponse,
+                    thinking_config=types.ThinkingConfig(thinking_level="minimal")
                 ),
                 contents=f"Classify:\n{formatted}"
             )
@@ -87,48 +88,63 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
         progress_bar.progress(min((i + batch_size) / len(keywords), 1.0))
     return all_data
 
-# --- Sidebar ---
+# --- Sidebar: Configuration & Custom Inputs ---
 with st.sidebar:
     api_key = st.text_input("Gemini API Key", type="password")
-    use_custom = st.checkbox("Enable Custom Categorisation")
+    use_custom = st.checkbox("Enable Custom Categorization")
 
-    topics_input = ""
-    subtopics_input = ""
+    # We use a FORM here so that typing doesn't trigger a refresh every 2 seconds
+    with st.form("category_form"):
+        st.write("### Define Your Strategy")
+        topics_area = st.text_area("Primary Topics (Required)", height=150)
+        subtopics_area = st.text_area("Subtopics (Optional)", height=150)
+        submit_categories = st.form_submit_button("Save Categories")
 
-    if use_custom:
-        st.markdown("### Topic Strategy")
-        topics_input = st.text_area("Primary Topics (Required)")
-        subtopics_input = st.text_area("Subtopics (Optional)")
-
-# --- Main App ---
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+# --- Main App Interface ---
+uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
     target_col = st.selectbox("Keyword Column", df.columns)
 
-    # NEW: The Suggester UI
     if use_custom:
-        if st.button("✨ Suggest Topics from My Data"):
-            if not api_key:
-                st.error("Enter API Key first.")
-            else:
-                # Randomly sample 50 keywords for the AI to "read"
-                sample = df[target_col].sample(n=min(50, len(df))).astype(str).tolist()
-                suggestions = suggest_topics(sample, api_key)
-                st.markdown("### 💡 AI Recommendations")
-                st.info("Copy and paste these into the text boxes in the sidebar.")
-                st.code(suggestions)
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("✨ Generate AI Topic Suggestions"):
+                if not api_key:
+                    st.error("Please enter an API Key first.")
+                else:
+                    with st.spinner("Analysing keyword sample..."):
+                        sample = df[target_col].sample(n=min(50, len(df))).astype(str).tolist()
+                        # Save to session state so it PERSISTS
+                        st.session_state.ai_suggestions = suggest_topics(sample, api_key)
+
+        with col2:
+            if st.button("🗑️ Clear Suggestions"):
+                st.session_state.ai_suggestions = ""
+                st.rerun()
+
+        # This block checks the 'Sticky Note' (session_state) instead of the button click
+        if st.session_state.ai_suggestions:
+            st.markdown("---")
+            st.markdown("### 💡 AI Recommended Topics & Subtopics")
+            st.info("Copy these and paste them into the sidebar form. Then click 'Save Categories'.")
+            st.code(st.session_state.ai_suggestions)
+            st.markdown("---")
 
     if st.button("Run Full Classification"):
-        if not api_key: st.error("Missing API Key.")
+        if not api_key:
+            st.error("Missing API Key.")
+        elif use_custom and not topics_area:
+            st.error("Topics are required when Custom Categorisation is enabled.")
         else:
-            results = classify_batches(df[target_col].tolist(), api_key, use_custom, topics_input, subtopics_input)
-            res_df = pd.DataFrame(results)
-            df['Intent'] = res_df['Intent']
-            if use_custom:
-                df['Topic'], df['Subtopic'] = res_df['Topic'], res_df['Subtopic']
+            with st.spinner("Classifying in high-precision batches..."):
+                results = classify_batches(df[target_col].tolist(), api_key, use_custom, topics_area, subtopics_area)
+                res_df = pd.DataFrame(results)
+                df['Intent'] = res_df['Intent']
+                if use_custom:
+                    df['Topic'], df['Subtopic'] = res_df['Topic'], res_df['Subtopic']
 
-            st.success("Complete!")
-            st.dataframe(df)
-            st.download_button("📥 Download CSV", df.to_csv(index=False), "results.csv", "text/csv")
+                st.success("Classification Complete!")
+                st.dataframe(df)
+                st.download_button("Download Results (.csv)", df.to_csv(index=False), "categorised_seo_data.csv", "text/csv")
