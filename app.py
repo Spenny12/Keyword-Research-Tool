@@ -97,8 +97,8 @@ with st.sidebar:
 
     if use_custom:
         st.markdown("### Topic Strategy")
-        topics_input = st.text_area("Primary Topics (Required)", placeholder="E.g. SEO, Content, Technical")
-        subtopics_input = st.text_area("Subtopics (Optional)", placeholder="E.g. Backlinks, Site Speed")
+        topics_input = st.text_area("Primary Topics (Required)")
+        subtopics_input = st.text_area("Subtopics (Optional)")
 
 # --- Main App ---
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
