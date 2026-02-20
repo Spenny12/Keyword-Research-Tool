@@ -8,7 +8,7 @@ import random
 
 # --- UI Configuration ---
 st.set_page_config(page_title="Pro SEO Classifier", layout="wide")
-st.title("🚀 Pro SEO Classifier & Topic Suggester")
+st.title("SEO Classifier & Topic Suggester")
 
 # --- Structured Output Definition ---
 class IntentResult(BaseModel):
