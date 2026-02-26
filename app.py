@@ -99,7 +99,7 @@ with st.sidebar:
     # HIDE/SHOW LOGIC: Only show the form if the checkbox is True
     if use_custom:
         with st.form("category_form"):
-            st.write("### Define Your Strategy")
+            st.write("### Provide topics/subtopics here. If you don't do this, the tool will only generate intents")
             topics_area = st.text_area("Primary Topics (Required)", height=150, help="Paste topics here.")
             subtopics_area = st.text_area("Subtopics (Optional)", height=150, help="Paste subtopics here.")
             st.form_submit_button("Save Strategy")
