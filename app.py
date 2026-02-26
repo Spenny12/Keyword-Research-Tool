@@ -102,7 +102,7 @@ with st.sidebar:
             st.write("### Provide topics/subtopics here. If you don't do this, the tool will only generate intents")
             topics_area = st.text_area("Primary Topics (Required)", height=150, help="Paste topics here.")
             subtopics_area = st.text_area("Subtopics (Optional)", height=150, help="Paste subtopics here.")
-            st.form_submit_button("Save Strategy")
+            st.form_submit_button("Save")
 
 # --- Main App Interface ---
 uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"])
