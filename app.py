@@ -24,23 +24,25 @@ class BatchResponse(BaseModel):
 # --- Session State Initialization ---
 if "ai_suggestions" not in st.session_state:
     st.session_state.ai_suggestions = ""
-if "strategy" not in st.session_state:
-    st.session_state.strategy = ""
+if "topics" not in st.session_state:
+    st.session_state.topics = ""
+if "subtopics" not in st.session_state:
+    st.session_state.subtopics = ""
 
 # --- Logic: Topic Suggester ---
 def suggest_topics(sample_keywords, api_key):
     client = genai.Client(api_key=api_key)
     prompt = f"""
-    Analyse these keywords and suggest 5-8 primary TOPICS. For each TOPIC, suggest 2-4 granular SUBTOPICS that fall strictly under its umbrella.
+    Analyse these keywords and suggest 5-8 primary TOPICS and 10-15 granular SUBTOPICS.
+    Keep subtopics concise (the 'stem' only) without extra details in brackets.
     Keywords: {", ".join(sample_keywords)}
 
-    Format your response as a hierarchical list:
-    - TOPIC 1
-        - Subtopic 1a
-        - Subtopic 1b
-    - TOPIC 2
-        - Subtopic 2a
-        - Subtopic 2b
+    Format your response clearly:
+    TOPICS:
+    (One per line)
+
+    SUBTOPICS:
+    (One per line)
     """
     try:
         response = client.models.generate_content(
@@ -53,7 +55,7 @@ def suggest_topics(sample_keywords, api_key):
         return f"Error: {e}"
 
 # --- Logic: Batch Classification ---
-def classify_batches(keywords, api_key, custom_mode, strategy=""):
+def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     client = genai.Client(api_key=api_key)
     all_data = []
     batch_size = 30
@@ -61,14 +63,13 @@ def classify_batches(keywords, api_key, custom_mode, strategy=""):
     system_instruction = """
     You are a strict SEO analyst. For each keyword:
     1. Label intent: definition/factual, examples/list, comparison/pros-cons, asset/download/tool, product/service, instruction/how-to, consequence/effects/impacts, benefits/reason/justification, cost/price, unclear.
-    2. Map to Marketing Funnel stage: Awareness (TOFU), Consideration (MOFU), or Transactional (BOFU).
+    2. Map to Marketing Funnel stage: Awareness, Consideration, or Transactional.
     3. Provide a confidence score between 0.0 and 1.0 for your classification.
     """
 
     if custom_mode:
-        system_instruction += f"\nCLASSIFICATION STRATEGY (TOPICS & SUBTOPICS):\n{strategy}\n"
-        system_instruction += "\nAssign one Topic and one Subtopic from the strategy provided. "
-        system_instruction += "CRITICAL: The Subtopic MUST fall under the umbrella of the selected Topic in the hierarchy. "
+        system_instruction += f"\nTOPICS:\n{topics}\nSUBTOPICS:\n{subtopics}\n"
+        system_instruction += "\nAssign one Topic and one Subtopic from the lists provided. "
         system_instruction += "Use 'N/A' if no fit."
 
     progress_bar = st.progress(0)
@@ -112,12 +113,15 @@ with st.sidebar:
     if use_custom:
         with st.form("category_form"):
             st.write("### Provide your classification strategy here.")
-            # Use session state to persist the value
-            st.session_state.strategy = st.text_area("Topics & Subtopics (Required)", 
-                                        value=st.session_state.strategy,
-                                        height=300, 
-                                        help="Paste your hierarchical topics and subtopics here (e.g. - Topic \n  - Subtopic).",
-                                        placeholder="- TOPIC\n  - Subtopic 1\n  - Subtopic 2")
+            # Use session state to persist the values
+            st.session_state.topics = st.text_area("Primary Topics (Required)", 
+                                        value=st.session_state.topics,
+                                        height=150, 
+                                        help="Paste primary topics here (one per line).")
+            st.session_state.subtopics = st.text_area("Subtopics (Optional)", 
+                                        value=st.session_state.subtopics,
+                                        height=150, 
+                                        help="Paste granular subtopics here (one per line).")
             st.form_submit_button("Save Strategy")
 
 # --- Main App Interface ---
@@ -146,18 +150,19 @@ if uploaded_file:
         if st.session_state.ai_suggestions:
             st.markdown("---")
             st.markdown("### AI Recommended Topics & Subtopics")
-            st.info("Copy these and paste them into the 'Topics & Subtopics' field in the sidebar. Click 'Save Strategy' to lock them in.")
+            st.info("Copy these and paste them into the sidebar fields. Click 'Save Strategy' to lock them in.")
             st.code(st.session_state.ai_suggestions)
             st.markdown("---")
 
     if st.button("Run Full Classification"):
         if not api_key:
             st.error("Missing API Key.")
-        elif use_custom and not st.session_state.strategy:
-            st.error("Please provide a classification strategy in the sidebar form.")
+        elif use_custom and not st.session_state.topics:
+            st.error("Please provide topics in the sidebar form.")
         else:
             with st.spinner("Classifying in batches..."):
-                results = classify_batches(df[target_col].tolist(), api_key, use_custom, st.session_state.strategy)
+                results = classify_batches(df[target_col].tolist(), api_key, use_custom, 
+                                           st.session_state.topics, st.session_state.subtopics)
                 res_df = pd.DataFrame(results)
                 df['Intent'] = res_df['Intent']
                 df['Funnel'] = res_df['Funnel']
