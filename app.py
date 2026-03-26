@@ -33,7 +33,8 @@ if "subtopics" not in st.session_state:
 def suggest_topics(sample_keywords, api_key):
     client = genai.Client(api_key=api_key)
     prompt = f"""
-    Analyse these keywords and suggest 5-8 primary TOPICS and 10-15 granular SUBTOPICS.
+    Analyse these keywords and suggest primary TOPICS (no limit on count). 
+    For each TOPIC, suggest up to 5 granular SUBTOPICS, but only if they are necessary to define a distinct subset of the topic.
     Keep subtopics concise (the 'stem' only) without extra details in brackets.
     Keywords: {", ".join(sample_keywords)}
 
