@@ -62,16 +62,18 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     batch_size = 30
 
     system_instruction = """
-    You are a strict SEO analyst. For each keyword:
+    You are a strict, high-precision SEO analyst. For each keyword:
     1. Label intent: definition/factual, examples/list, comparison/pros-cons, asset/download/tool, product/service, instruction/how-to, consequence/effects/impacts, benefits/reason/justification, cost/price, unclear.
     2. Map to Marketing Funnel stage: Awareness, Consideration, or Transactional.
-    3. Provide a confidence score between 0.0 and 1.0 for your classification.
+    3. Provide a confidence score (0.0 to 1.0).
     """
 
     if custom_mode:
-        system_instruction += f"\nTOPICS:\n{topics}\nSUBTOPICS:\n{subtopics}\n"
-        system_instruction += "\nAssign one Topic and one Subtopic from the lists provided. "
-        system_instruction += "Use 'N/A' if no fit."
+        system_instruction += f"\nTOPICS LIST:\n{topics}\n\nSUBTOPICS LIST:\n{subtopics}\n"
+        system_instruction += "\nCRITICAL RULES FOR TOPIC/SUBTOPIC:"
+        system_instruction += "\n- ONLY assign a Topic or Subtopic if the keyword is EXPLICITLY and DIRECTLY related."
+        system_instruction += "\n- Do NOT 'best fit' or guess. If the keyword is broad (e.g., 'composite decking') and the subtopic is specific (e.g., 'wood effect textures'), use 'N/A' for the subtopic."
+        system_instruction += "\n- 'N/A' is the preferred answer if there is not a high-precision match."
 
     progress_bar = st.progress(0)
     for i in range(0, len(keywords), batch_size):
