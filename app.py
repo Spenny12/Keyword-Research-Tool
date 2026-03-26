@@ -33,17 +33,17 @@ if "subtopics" not in st.session_state:
 def suggest_topics(sample_keywords, api_key):
     client = genai.Client(api_key=api_key)
     prompt = f"""
-    Analyse these keywords and suggest primary TOPICS (no limit on count) and granular SUBTOPICS (up to 5 per topic).
-    Keep subtopics concise (the 'stem' only) and deduplicate them across the entire list.
+    Analyse these keywords. Provide:
+    1. A list of primary TOPICS.
+    2. A list of deduplicated, concise SUBTOPIC 'stems' (up to 5 per topic).
     Keywords: {", ".join(sample_keywords)}
 
-    Provide the output in TWO separate, clean blocks for easy copy-pasting:
-
+    Output as two clean blocks for copy-pasting:
     --- TOPICS BLOCK ---
-    (Paste these into the 'Primary Topics' field. One per line, no bolding, no symbols)
+    (One per line, no symbols)
 
     --- SUBTOPICS BLOCK ---
-    (Paste these into the 'Subtopics' field. One per line, no bolding, no symbols, deduplicated)
+    (One per line, no symbols)
     """
     try:
         response = client.models.generate_content(
@@ -140,7 +140,7 @@ if uploaded_file:
                     st.error("Please enter an API Key first.")
                 else:
                     with st.spinner("Analysing keyword sample..."):
-                        sample = df[target_col].sample(n=min(200, len(df))).astype(str).tolist()
+                        sample = df[target_col].sample(n=min(150, len(df))).astype(str).tolist()
                         st.session_state.ai_suggestions = suggest_topics(sample, api_key)
 
         with col2:
