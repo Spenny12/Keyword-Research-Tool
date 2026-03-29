@@ -37,7 +37,7 @@ def suggest_topics(sample_keywords, api_key):
     prompt = f"""
     Analyse these keywords. Provide:
     1. A list of primary TOPICS.
-    2. A list of deduplicated, concise SUBTOPIC 'stems' (up to 5 per topic).
+    2. A list of deduplicated, concise SUBTOPIC 'stems' (up to 3 per topic).
     Keywords: {", ".join(sample_keywords)}
 
     Output as two clean blocks for copy-pasting:
@@ -60,22 +60,22 @@ def suggest_topics(sample_keywords, api_key):
 # --- Logic: Batch Classification ---
 def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     client = genai.Client(api_key=api_key)
-    batch_size = 70 
-    max_workers = 7   # Slightly lower to avoid triggering 503/429
+    batch_size = 100 
+    max_workers = 10 
     
     system_instruction = """
-    You are a strict, high-precision SEO analyst. For each keyword:
-    1. Label intent: definition/factual, examples/list, comparison/pros-cons, asset/download/tool, product/service, instruction/how-to, consequence/effects/impacts, benefits/reason/justification, cost/price, unclear.
-    2. Map to Marketing Funnel stage: Awareness, Consideration, or Transactional.
-    3. Provide a confidence score (0.0 to 1.0).
+    You are a strict, high-precision SEO analyst.
+    Output analysis in pipe-delimited format: INDEX|INTENT|FUNNEL|CONFIDENCE|TOPIC|SUBTOPIC
+    
+    INTENT: definition/factual, examples/list, comparison/pros-cons, asset/download/tool, product/service, instruction/how-to, consequence/effects/impacts, benefits/reason/justification, cost/price, unclear.
+    FUNNEL: Awareness, Consideration, Transactional.
+    CONFIDENCE: 0.0 to 1.0.
+    TOPIC/SUBTOPIC: Only assign if EXPLICIT. Otherwise use "N/A".
     """
 
     if custom_mode:
         system_instruction += f"\nTOPICS LIST:\n{topics}\n\nSUBTOPICS LIST:\n{subtopics}\n"
-        system_instruction += "\nCRITICAL RULES FOR TOPIC/SUBTOPIC:"
-        system_instruction += "\n- ONLY assign a Topic or Subtopic if the keyword is EXPLICITLY and DIRECTLY related."
-        system_instruction += "\n- Do NOT 'best fit' or guess. If the keyword is broad (e.g., 'composite decking') and the subtopic is specific (e.g., 'wood effect textures'), use 'N/A' for the subtopic."
-        system_instruction += "\n- 'N/A' is the preferred answer if there is not a high-precision match."
+        system_instruction += "\nCRITICAL: Do NOT 'best fit'. If the keyword is broad and the subtopic is specific, use 'N/A' for the subtopic."
 
     final_results = [None] * len(keywords)
     keyword_status = [{"id": i, "kw": kw, "status": "pending"} for i, kw in enumerate(keywords)]
@@ -89,9 +89,8 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
         if not to_process or pass_count > 15:
             break
             
-        # Optional: Sleep briefly between passes to let the API "breathe"
         if pass_count > 1:
-            time.sleep(2)
+            time.sleep(1)
 
         chunks = [to_process[i : i + batch_size] for i in range(0, len(to_process), batch_size)]
         total_chunks = len(chunks)
@@ -105,21 +104,32 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
             
             chunk_results = []
             try:
-                # Added explicit timeout of 90 seconds
                 res = client.models.generate_content(
                     model="gemini-3-flash-preview",
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
                         temperature=0.0,
-                        response_mime_type="application/json",
-                        response_schema=BatchResponse,
                     ),
                     contents=f"Classify these keywords by index:\n{formatted}"
                 )
                 
+                # Manual Parsing of Delimited Text
                 batch_data = {}
-                if res.parsed and res.parsed.results:
-                    batch_data = {item.index: item for item in res.parsed.results}
+                for line in res.text.strip().split("\n"):
+                    if "|" not in line: continue
+                    parts = [p.strip() for p in line.split("|")]
+                    if len(parts) >= 4:
+                        try:
+                            clean_idx_str = parts[0].strip("*: ")
+                            idx = int(clean_idx_str)
+                            batch_data[idx] = {
+                                "Intent": parts[1], 
+                                "Funnel": parts[2],
+                                "Confidence": float(parts[3]) if parts[3].replace(".","",1).isdigit() else 0.5,
+                                "Topic": parts[4] if len(parts) > 4 else "N/A",
+                                "Subtopic": parts[5] if len(parts) > 5 else "N/A"
+                            }
+                        except Exception: continue
                 
                 for idx in range(len(chunk)):
                     global_idx = mapping[idx]
@@ -128,10 +138,7 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
                     if item:
                         chunk_results.append({
                             "global_id": global_idx,
-                            "data": {
-                                "Intent": item.label, "Funnel": item.funnel_stage,
-                                "Confidence": item.confidence, "Topic": item.topic, "Subtopic": item.subtopic
-                            },
+                            "data": item,
                             "new_status": "completed"
                         })
                     else:
@@ -159,15 +166,14 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
             futures = [executor.submit(process_chunk, c) for c in chunks]
             for future in as_completed(futures):
                 try:
-                    # Individual future timeout to prevent hanging the whole loop
-                    batch_out = future.result(timeout=100) 
+                    batch_out = future.result(timeout=120) 
                     for res in batch_out:
                         g_id = res["global_id"]
                         if res["new_status"] in ["completed", "failed_permanent"]:
                             final_results[g_id] = res["data"]
                         keyword_status[g_id]["status"] = res["new_status"]
                 except Exception:
-                    pass # Handled by the next pass if status remains pending
+                    pass 
                 
                 completed_chunks += 1
                 progress_bar.progress(min(completed_chunks / total_chunks, 1.0))
