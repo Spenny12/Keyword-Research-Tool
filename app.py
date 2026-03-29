@@ -13,12 +13,12 @@ st.title("Classifier & Topic Suggester")
 
 # --- Structured Output Definition ---
 class IntentResult(BaseModel):
-    index: int
-    label: str
-    funnel_stage: str
-    confidence: float
-    topic: Optional[str] = "N/A"
-    subtopic: Optional[str] = "N/A"
+    idx: int
+    i: str  # intent code
+    f: str  # funnel code
+    c: float # confidence
+    t: str = "N/A" # topic
+    s: str = "N/A" # subtopic
 
 class BatchResponse(BaseModel):
     results: List[IntentResult]
@@ -60,10 +60,10 @@ def suggest_topics(sample_keywords, api_key):
 # --- Logic: Batch Classification ---
 def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     client = genai.Client(api_key=api_key)
+    model_id = "gemini-3-flash-preview"
     batch_size = 100 
     max_workers = 10 
     
-    # Mapping for token reduction
     intent_map = {
         "1": "definition/factual", "2": "examples/list", "3": "comparison/pros-cons",
         "4": "asset/download/tool", "5": "product/service", "6": "instruction/how-to",
@@ -72,20 +72,25 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     }
     funnel_map = {"A": "Awareness", "C": "Consideration", "T": "Transactional"}
 
-    system_instruction = f"""
-    Strict SEO Analyst. Output: INDEX|INTENT_CODE|FUNNEL_CODE|CONFIDENCE|TOPIC|SUBTOPIC
-    
-    INTENT_CODES: {", ".join([f"{k}:{v}" for k,v in intent_map.items()])}
-    FUNNEL_CODES: A:Awareness, C:Consideration, T:Transactional
-    CONFIDENCE: 0.0-1.0
-    TOPIC/SUBTOPIC: Use "N/A" if not EXPLICIT.
-    """
-
+    # Ultra-lean prompt
+    system_instruction = f"SEO: {','.join([f'{k}:{v}' for k,v in intent_map.items()])}|A:Aware,C:Consid,T:Trans. Output JSON."
     if custom_mode:
-        # Compress lists to save input tokens
         c_topics = ",".join([t.strip() for t in topics.split("\n") if t.strip()])
         c_subtopics = ",".join([s.strip() for s in subtopics.split("\n") if s.strip()])
-        system_instruction += f"\nTOPICS: {c_topics}\nSUBTOPICS: {c_subtopics}\nNo 'best fit'."
+        system_instruction += f" Topics: {c_topics}. Subtopics: {c_subtopics}."
+
+    # Context Caching (Note: Minimum 32k tokens for actual cost savings)
+    cache = None
+    try:
+        cache = client.caches.create(
+            model=model_id,
+            config=types.CacheConfig(
+                system_instruction=system_instruction,
+                ttl_seconds=3600
+            )
+        )
+    except Exception:
+        pass # Fallback to standard instruction if caching not supported
 
     final_results = [None] * len(keywords)
     keyword_status = [{"id": i, "kw": kw, "status": "pending"} for i, kw in enumerate(keywords)]
@@ -110,36 +115,33 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
 
         def process_chunk(chunk):
             mapping = {idx: item["id"] for idx, item in enumerate(chunk)}
-            formatted = "\n".join([f"{idx}: {item['kw']}" for idx, item in enumerate(chunk)])
+            # Compressed input format
+            formatted = "\n".join([f"{idx}|{item['kw']}" for idx, item in enumerate(chunk)])
             
             chunk_results = []
             try:
                 res = client.models.generate_content(
-                    model="gemini-3-flash-preview",
+                    model=model_id,
                     config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
+                        system_instruction=None if cache else system_instruction,
+                        cached_content=cache.name if cache else None,
+                        response_mime_type="application/json",
+                        response_schema=BatchResponse,
                         temperature=0.0,
                     ),
-                    contents=f"Classify indices:\n{formatted}"
+                    contents=formatted
                 )
                 
                 batch_data = {}
-                for line in res.text.strip().split("\n"):
-                    if "|" not in line: continue
-                    parts = [p.strip() for p in line.split("|")]
-                    if len(parts) >= 3:
+                if res.parsed and res.parsed.results:
+                    for item in res.parsed.results:
                         try:
-                            idx = int(parts[0].strip("*: "))
-                            # Map codes back to full words
-                            intent = intent_map.get(parts[1], "unclear")
-                            funnel = funnel_map.get(parts[2].upper(), "Awareness")
-                            
-                            batch_data[idx] = {
-                                "Intent": intent, 
-                                "Funnel": funnel,
-                                "Confidence": float(parts[3]) if len(parts) > 3 and parts[3].replace(".","",1).isdigit() else 0.5,
-                                "Topic": parts[4] if len(parts) > 4 else "N/A",
-                                "Subtopic": parts[5] if len(parts) > 5 else "N/A"
+                            batch_data[item.idx] = {
+                                "Intent": intent_map.get(item.i, "unclear"), 
+                                "Funnel": funnel_map.get(item.f.upper(), "Awareness"),
+                                "Confidence": item.c,
+                                "Topic": item.t,
+                                "Subtopic": item.s
                             }
                         except Exception: continue
                 
@@ -246,9 +248,18 @@ if uploaded_file:
             st.error("Please provide topics in the sidebar form.")
         else:
             with st.spinner("Classifying in batches..."):
-                results = classify_batches(df[target_col].tolist(), api_key, use_custom, 
+                # Filter nulls and duplicates locally to save tokens
+                raw_kws = df[target_col].astype(str).tolist()
+                unique_kws = list(dict.fromkeys([kw for kw in raw_kws if kw.strip() and kw.lower() != 'nan']))
+                
+                results_list = classify_batches(unique_kws, api_key, use_custom, 
                                            st.session_state.topics, st.session_state.subtopics)
-                res_df = pd.DataFrame(results)
+                
+                # Map results back to original dataframe (including duplicates)
+                results_map = dict(zip(unique_kws, results_list))
+                final_results = [results_map.get(kw, {"Intent": "N/A", "Funnel": "N/A", "Confidence": 0.0, "Topic": "N/A", "Subtopic": "N/A"}) for kw in raw_kws]
+
+                res_df = pd.DataFrame(final_results)
                 df['Intent'] = res_df['Intent']
                 df['Funnel'] = res_df['Funnel']
                 df['Confidence'] = res_df['Confidence']
