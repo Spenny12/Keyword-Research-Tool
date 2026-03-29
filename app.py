@@ -63,19 +63,29 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     batch_size = 100 
     max_workers = 10 
     
-    system_instruction = """
-    You are a strict, high-precision SEO analyst.
-    Output analysis in pipe-delimited format: INDEX|INTENT|FUNNEL|CONFIDENCE|TOPIC|SUBTOPIC
+    # Mapping for token reduction
+    intent_map = {
+        "1": "definition/factual", "2": "examples/list", "3": "comparison/pros-cons",
+        "4": "asset/download/tool", "5": "product/service", "6": "instruction/how-to",
+        "7": "consequence/effects/impacts", "8": "benefits/reason/justification",
+        "9": "cost/price", "10": "unclear"
+    }
+    funnel_map = {"A": "Awareness", "C": "Consideration", "T": "Transactional"}
+
+    system_instruction = f"""
+    Strict SEO Analyst. Output: INDEX|INTENT_CODE|FUNNEL_CODE|CONFIDENCE|TOPIC|SUBTOPIC
     
-    INTENT: definition/factual, examples/list, comparison/pros-cons, asset/download/tool, product/service, instruction/how-to, consequence/effects/impacts, benefits/reason/justification, cost/price, unclear.
-    FUNNEL: Awareness, Consideration, Transactional.
-    CONFIDENCE: 0.0 to 1.0.
-    TOPIC/SUBTOPIC: Only assign if EXPLICIT. Otherwise use "N/A".
+    INTENT_CODES: {", ".join([f"{k}:{v}" for k,v in intent_map.items()])}
+    FUNNEL_CODES: A:Awareness, C:Consideration, T:Transactional
+    CONFIDENCE: 0.0-1.0
+    TOPIC/SUBTOPIC: Use "N/A" if not EXPLICIT.
     """
 
     if custom_mode:
-        system_instruction += f"\nTOPICS LIST:\n{topics}\n\nSUBTOPICS LIST:\n{subtopics}\n"
-        system_instruction += "\nCRITICAL: Do NOT 'best fit'. If the keyword is broad and the subtopic is specific, use 'N/A' for the subtopic."
+        # Compress lists to save input tokens
+        c_topics = ",".join([t.strip() for t in topics.split("\n") if t.strip()])
+        c_subtopics = ",".join([s.strip() for s in subtopics.split("\n") if s.strip()])
+        system_instruction += f"\nTOPICS: {c_topics}\nSUBTOPICS: {c_subtopics}\nNo 'best fit'."
 
     final_results = [None] * len(keywords)
     keyword_status = [{"id": i, "kw": kw, "status": "pending"} for i, kw in enumerate(keywords)]
@@ -110,22 +120,24 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
                         system_instruction=system_instruction,
                         temperature=0.0,
                     ),
-                    contents=f"Classify these keywords by index:\n{formatted}"
+                    contents=f"Classify indices:\n{formatted}"
                 )
                 
-                # Manual Parsing of Delimited Text
                 batch_data = {}
                 for line in res.text.strip().split("\n"):
                     if "|" not in line: continue
                     parts = [p.strip() for p in line.split("|")]
-                    if len(parts) >= 4:
+                    if len(parts) >= 3:
                         try:
-                            clean_idx_str = parts[0].strip("*: ")
-                            idx = int(clean_idx_str)
+                            idx = int(parts[0].strip("*: "))
+                            # Map codes back to full words
+                            intent = intent_map.get(parts[1], "unclear")
+                            funnel = funnel_map.get(parts[2].upper(), "Awareness")
+                            
                             batch_data[idx] = {
-                                "Intent": parts[1], 
-                                "Funnel": parts[2],
-                                "Confidence": float(parts[3]) if parts[3].replace(".","",1).isdigit() else 0.5,
+                                "Intent": intent, 
+                                "Funnel": funnel,
+                                "Confidence": float(parts[3]) if len(parts) > 3 and parts[3].replace(".","",1).isdigit() else 0.5,
                                 "Topic": parts[4] if len(parts) > 4 else "N/A",
                                 "Subtopic": parts[5] if len(parts) > 5 else "N/A"
                             }
@@ -136,11 +148,7 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
                     item = batch_data.get(idx)
                     
                     if item:
-                        chunk_results.append({
-                            "global_id": global_idx,
-                            "data": item,
-                            "new_status": "completed"
-                        })
+                        chunk_results.append({"global_id": global_idx, "data": item, "new_status": "completed"})
                     else:
                         current_status = keyword_status[global_idx]["status"]
                         new_status = "failed_permanent" if current_status == "retry_skip" else "retry_skip"
@@ -152,12 +160,11 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
             except Exception as e:
                 error_msg = str(e).lower()
                 is_server_error = any(code in error_msg for code in ["503", "500", "504", "overloaded", "deadline", "timeout"])
-                
                 for item in chunk:
                     global_idx = item["id"]
                     chunk_results.append({
                         "global_id": global_idx,
-                        "data": {"Intent": f"error: {error_msg[:30]}", "Funnel": "error", "Confidence": 0.0, "Topic": "error", "Subtopic": "error"},
+                        "data": {"Intent": "error", "Funnel": "error", "Confidence": 0.0, "Topic": "error", "Subtopic": "error"},
                         "new_status": keyword_status[global_idx]["status"] if is_server_error else "failed_permanent"
                     })
             return chunk_results
@@ -172,25 +179,14 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
                         if res["new_status"] in ["completed", "failed_permanent"]:
                             final_results[g_id] = res["data"]
                         keyword_status[g_id]["status"] = res["new_status"]
-                except Exception:
-                    pass 
-                
+                except Exception: pass 
                 completed_chunks += 1
                 progress_bar.progress(min(completed_chunks / total_chunks, 1.0))
-        
         pass_count += 1
 
     for i, res in enumerate(final_results):
         if res is None:
-            final_results[i] = {"Intent": "error: max retries", "Funnel": "N/A", "Confidence": 0.0, "Topic": "N/A", "Subtopic": "N/A"}
-
-    return final_results
-
-    # Fill any remaining gaps
-    for i, res in enumerate(final_results):
-        if res is None:
-            final_results[i] = {"Intent": "error: max retries", "Funnel": "N/A", "Confidence": 0.0, "Topic": "N/A", "Subtopic": "N/A"}
-
+            final_results[i] = {"Intent": "error", "Funnel": "N/A", "Confidence": 0.0, "Topic": "N/A", "Subtopic": "N/A"}
     return final_results
 
 # --- Sidebar: Configuration & Custom Inputs ---
