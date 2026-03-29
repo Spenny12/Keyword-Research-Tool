@@ -4,6 +4,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- UI Configuration ---
 st.set_page_config(page_title="SEO Classifier", layout="wide")
@@ -58,9 +59,9 @@ def suggest_topics(sample_keywords, api_key):
 # --- Logic: Batch Classification ---
 def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     client = genai.Client(api_key=api_key)
-    all_data = []
-    batch_size = 20  # Reduced batch size for better reliability
-
+    batch_size = 100  # Increased batch size for efficiency
+    max_workers = 5   # Parallelize requests
+    
     system_instruction = """
     You are a strict, high-precision SEO analyst. For each keyword:
     1. Label intent: definition/factual, examples/list, comparison/pros-cons, asset/download/tool, product/service, instruction/how-to, consequence/effects/impacts, benefits/reason/justification, cost/price, unclear.
@@ -75,11 +76,13 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
         system_instruction += "\n- Do NOT 'best fit' or guess. If the keyword is broad (e.g., 'composite decking') and the subtopic is specific (e.g., 'wood effect textures'), use 'N/A' for the subtopic."
         system_instruction += "\n- 'N/A' is the preferred answer if there is not a high-precision match."
 
+    chunks = [keywords[i : i + batch_size] for i in range(0, len(keywords), batch_size)]
+    results_map = {}
     progress_bar = st.progress(0)
-    for i in range(0, len(keywords), batch_size):
-        chunk = keywords[i : i + batch_size]
-        formatted = "\n".join([f"{idx}: {kw}" for idx, kw in enumerate(chunk)])
 
+    def process_chunk(chunk_idx, chunk):
+        formatted = "\n".join([f"{idx}: {kw}" for idx, kw in enumerate(chunk)])
+        chunk_data = []
         try:
             res = client.models.generate_content(
                 model="gemini-3-flash-preview",
@@ -92,7 +95,6 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
                 contents=f"Classify these keywords by index:\n{formatted}"
             )
             
-            # Map results by index to ensure correct ordering and handle missing items
             batch_results = {}
             if res.parsed and res.parsed.results:
                 batch_results = {item.index: item for item in res.parsed.results}
@@ -100,7 +102,7 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
             for idx in range(len(chunk)):
                 item = batch_results.get(idx)
                 if item:
-                    all_data.append({
+                    chunk_data.append({
                         "Intent": item.label, 
                         "Funnel": item.funnel_stage,
                         "Confidence": item.confidence,
@@ -108,18 +110,30 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
                         "Subtopic": item.subtopic
                     })
                 else:
-                    # Handle missing index in model response
-                    all_data.append({
+                    chunk_data.append({
                         "Intent": "skipped", "Funnel": "skipped", "Confidence": 0.0, "Topic": "N/A", "Subtopic": "N/A"
                     })
         except Exception as e:
-            # Log error to streamlit if possible or just append error rows
             for _ in chunk: 
-                all_data.append({
+                chunk_data.append({
                     "Intent": f"error: {str(e)[:50]}", "Funnel": "error", "Confidence": 0.0, "Topic": "error", "Subtopic": "error"
                 })
-        
-        progress_bar.progress(min((i + batch_size) / len(keywords), 1.0))
+        return chunk_idx, chunk_data
+
+    # Use ThreadPoolExecutor for concurrent API calls
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_chunk, i, chunks[i]): i for i in range(len(chunks))}
+        completed = 0
+        for future in as_completed(futures):
+            idx, data = future.result()
+            results_map[idx] = data
+            completed += 1
+            progress_bar.progress(completed / len(chunks))
+    
+    # Reassemble results in original order
+    all_data = []
+    for i in range(len(chunks)):
+        all_data.extend(results_map.get(i, []))
     
     return all_data
 
