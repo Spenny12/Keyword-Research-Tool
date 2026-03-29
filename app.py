@@ -60,7 +60,7 @@ def suggest_topics(sample_keywords, api_key):
 def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     client = genai.Client(api_key=api_key)
     batch_size = 100  # Increased batch size for efficiency
-    max_workers = 5   # Parallelize requests
+    max_workers = 10   # Parallelize requests
     
     system_instruction = """
     You are a strict, high-precision SEO analyst. For each keyword:
@@ -78,6 +78,9 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
 
     chunks = [keywords[i : i + batch_size] for i in range(0, len(keywords), batch_size)]
     results_map = {}
+    
+    # Progress UI
+    status_text = st.empty()
     progress_bar = st.progress(0)
 
     def process_chunk(chunk_idx, chunk):
@@ -124,11 +127,13 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_chunk, i, chunks[i]): i for i in range(len(chunks))}
         completed = 0
+        total_chunks = len(chunks)
         for future in as_completed(futures):
             idx, data = future.result()
             results_map[idx] = data
             completed += 1
-            progress_bar.progress(completed / len(chunks))
+            status_text.text(f"Processed batch {completed}/{total_chunks}...")
+            progress_bar.progress(completed / total_chunks)
     
     # Reassemble results in original order
     all_data = []
