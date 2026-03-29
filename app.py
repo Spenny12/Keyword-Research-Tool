@@ -59,7 +59,7 @@ def suggest_topics(sample_keywords, api_key):
 def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     client = genai.Client(api_key=api_key)
     all_data = []
-    batch_size = 30
+    batch_size = 20  # Reduced batch size for better reliability
 
     system_instruction = """
     You are a strict, high-precision SEO analyst. For each keyword:
@@ -78,7 +78,7 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     progress_bar = st.progress(0)
     for i in range(0, len(keywords), batch_size):
         chunk = keywords[i : i + batch_size]
-        formatted = "\n".join([f"{i+idx}: {kw}" for idx, kw in enumerate(chunk)])
+        formatted = "\n".join([f"{idx}: {kw}" for idx, kw in enumerate(chunk)])
 
         try:
             res = client.models.generate_content(
@@ -88,23 +88,39 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
                     temperature=0.0,
                     response_mime_type="application/json",
                     response_schema=BatchResponse,
-                    thinking_config=types.ThinkingConfig(thinking_level="minimal")
                 ),
-                contents=f"Classify:\n{formatted}"
+                contents=f"Classify these keywords by index:\n{formatted}"
             )
-            for item in res.parsed.results:
+            
+            # Map results by index to ensure correct ordering and handle missing items
+            batch_results = {}
+            if res.parsed and res.parsed.results:
+                batch_results = {item.index: item for item in res.parsed.results}
+            
+            for idx in range(len(chunk)):
+                item = batch_results.get(idx)
+                if item:
+                    all_data.append({
+                        "Intent": item.label, 
+                        "Funnel": item.funnel_stage,
+                        "Confidence": item.confidence,
+                        "Topic": item.topic, 
+                        "Subtopic": item.subtopic
+                    })
+                else:
+                    # Handle missing index in model response
+                    all_data.append({
+                        "Intent": "skipped", "Funnel": "skipped", "Confidence": 0.0, "Topic": "N/A", "Subtopic": "N/A"
+                    })
+        except Exception as e:
+            # Log error to streamlit if possible or just append error rows
+            for _ in chunk: 
                 all_data.append({
-                    "Intent": item.label, 
-                    "Funnel": item.funnel_stage,
-                    "Confidence": item.confidence,
-                    "Topic": item.topic, 
-                    "Subtopic": item.subtopic
+                    "Intent": f"error: {str(e)[:50]}", "Funnel": "error", "Confidence": 0.0, "Topic": "error", "Subtopic": "error"
                 })
-        except:
-            for _ in chunk: all_data.append({
-                "Intent": "error", "Funnel": "error", "Confidence": 0.0, "Topic": "error", "Subtopic": "error"
-            })
+        
         progress_bar.progress(min((i + batch_size) / len(keywords), 1.0))
+    
     return all_data
 
 # --- Sidebar: Configuration & Custom Inputs ---
