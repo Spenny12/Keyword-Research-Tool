@@ -59,8 +59,8 @@ def suggest_topics(sample_keywords, api_key):
 # --- Logic: Batch Classification ---
 def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
     client = genai.Client(api_key=api_key)
-    batch_size = 100  # Increased batch size for efficiency
-    max_workers = 10   # Parallelize requests
+    batch_size = 70  # Slightly reduced for better reliability during retries
+    max_workers = 10
     
     system_instruction = """
     You are a strict, high-precision SEO analyst. For each keyword:
@@ -76,71 +76,118 @@ def classify_batches(keywords, api_key, custom_mode, topics="", subtopics=""):
         system_instruction += "\n- Do NOT 'best fit' or guess. If the keyword is broad (e.g., 'composite decking') and the subtopic is specific (e.g., 'wood effect textures'), use 'N/A' for the subtopic."
         system_instruction += "\n- 'N/A' is the preferred answer if there is not a high-precision match."
 
-    chunks = [keywords[i : i + batch_size] for i in range(0, len(keywords), batch_size)]
-    results_map = {}
+    # Initialize final results container
+    final_results = [None] * len(keywords)
     
-    # Progress UI
+    # Track which keywords need retrying
+    # Status can be: "pending", "completed", "retry_skip", "failed_permanent"
+    keyword_status = [{"id": i, "kw": kw, "status": "pending"} for i, kw in enumerate(keywords)]
+    
+    pass_count = 1
     status_text = st.empty()
     progress_bar = st.progress(0)
 
-    def process_chunk(chunk_idx, chunk):
-        formatted = "\n".join([f"{idx}: {kw}" for idx, kw in enumerate(chunk)])
-        chunk_data = []
-        try:
-            res = client.models.generate_content(
-                model="gemini-3-flash-preview",
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.0,
-                    response_mime_type="application/json",
-                    response_schema=BatchResponse,
-                ),
-                contents=f"Classify these keywords by index:\n{formatted}"
-            )
+    while any(s["status"] in ["pending", "retry_skip"] for s in keyword_status):
+        # Filter keywords that need processing in this pass
+        to_process = [s for s in keyword_status if s["status"] in ["pending", "retry_skip"]]
+        
+        if not to_process:
+            break
             
-            batch_results = {}
-            if res.parsed and res.parsed.results:
-                batch_results = {item.index: item for item in res.parsed.results}
-            
-            for idx in range(len(chunk)):
-                item = batch_results.get(idx)
-                if item:
-                    chunk_data.append({
-                        "Intent": item.label, 
-                        "Funnel": item.funnel_stage,
-                        "Confidence": item.confidence,
-                        "Topic": item.topic, 
-                        "Subtopic": item.subtopic
-                    })
-                else:
-                    chunk_data.append({
-                        "Intent": "skipped", "Funnel": "skipped", "Confidence": 0.0, "Topic": "N/A", "Subtopic": "N/A"
-                    })
-        except Exception as e:
-            for _ in chunk: 
-                chunk_data.append({
-                    "Intent": f"error: {str(e)[:50]}", "Funnel": "error", "Confidence": 0.0, "Topic": "error", "Subtopic": "error"
-                })
-        return chunk_idx, chunk_data
-
-    # Use ThreadPoolExecutor for concurrent API calls
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_chunk, i, chunks[i]): i for i in range(len(chunks))}
-        completed = 0
+        chunks = [to_process[i : i + batch_size] for i in range(0, len(to_process), batch_size)]
         total_chunks = len(chunks)
-        for future in as_completed(futures):
-            idx, data = future.result()
-            results_map[idx] = data
-            completed += 1
-            status_text.text(f"Processed batch {completed}/{total_chunks}...")
-            progress_bar.progress(completed / total_chunks)
-    
-    # Reassemble results in original order
-    all_data = []
-    for i in range(len(chunks)):
-        all_data.extend(results_map.get(i, []))
-    
-    return all_data
+        completed_chunks = 0
+        
+        status_text.text(f"Pass {pass_count}: Processing {len(to_process)} keywords in {total_chunks} batches...")
+
+        def process_chunk(chunk):
+            # Create a local mapping of index-in-chunk to global-index
+            mapping = {idx: item["id"] for idx, item in enumerate(chunk)}
+            formatted = "\n".join([f"{idx}: {item['kw']}" for idx, item in enumerate(chunk)])
+            
+            chunk_results = []
+            try:
+                res = client.models.generate_content(
+                    model="gemini-3-flash-preview",
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.0,
+                        response_mime_type="application/json",
+                        response_schema=BatchResponse,
+                    ),
+                    contents=f"Classify these keywords by index:\n{formatted}"
+                )
+                
+                batch_data = {}
+                if res.parsed and res.parsed.results:
+                    batch_data = {item.index: item for item in res.parsed.results}
+                
+                for idx in range(len(chunk)):
+                    global_idx = mapping[idx]
+                    item = batch_data.get(idx)
+                    
+                    if item:
+                        chunk_results.append({
+                            "global_id": global_idx,
+                            "data": {
+                                "Intent": item.label, "Funnel": item.funnel_stage,
+                                "Confidence": item.confidence, "Topic": item.topic, "Subtopic": item.subtopic
+                            },
+                            "new_status": "completed"
+                        })
+                    else:
+                        # Logic for SKIPPED (missing from JSON)
+                        # If this was already a retry for a skip, mark permanent
+                        current_status = keyword_status[global_idx]["status"]
+                        new_status = "failed_permanent" if current_status == "retry_skip" else "retry_skip"
+                        
+                        chunk_results.append({
+                            "global_id": global_idx,
+                            "data": {
+                                "Intent": "skipped", "Funnel": "N/A", "Confidence": 0.0, "Topic": "N/A", "Subtopic": "N/A"
+                            },
+                            "new_status": new_status
+                        })
+            except Exception as e:
+                error_msg = str(e)
+                # Logic for 503 / Connection Errors (Always retry)
+                is_server_error = any(code in error_msg for code in ["503", "500", "504"]) or "overloaded" in error_msg.lower() or "deadline" in error_msg.lower()
+                
+                for item in chunk:
+                    global_idx = item["id"]
+                    # If server error, keep as its CURRENT status (pending or retry_skip) so it tries again in the same capacity
+                    chunk_results.append({
+                        "global_id": global_idx,
+                        "data": {"Intent": f"error: {error_msg[:30]}", "Funnel": "error", "Confidence": 0.0, "Topic": "error", "Subtopic": "error"},
+                        "new_status": keyword_status[global_idx]["status"] if is_server_error else "failed_permanent"
+                    })
+            return chunk_results
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process_chunk, c) for c in chunks]
+            for future in as_completed(futures):
+                batch_out = future.result()
+                for res in batch_out:
+                    g_id = res["global_id"]
+                    # Only update final_results if we actually got data or it's the final attempt
+                    if res["new_status"] in ["completed", "failed_permanent"]:
+                        final_results[g_id] = res["data"]
+                    
+                    keyword_status[g_id]["status"] = res["new_status"]
+                
+                completed_chunks += 1
+                progress_bar.progress(min(completed_chunks / total_chunks, 1.0))
+        
+        pass_count += 1
+        if pass_count > 15: # Safety break
+            break
+
+    # Fill any remaining gaps
+    for i, res in enumerate(final_results):
+        if res is None:
+            final_results[i] = {"Intent": "error: max retries", "Funnel": "N/A", "Confidence": 0.0, "Topic": "N/A", "Subtopic": "N/A"}
+
+    return final_results
 
 # --- Sidebar: Configuration & Custom Inputs ---
 with st.sidebar:
