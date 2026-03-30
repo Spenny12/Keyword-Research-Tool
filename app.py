@@ -92,11 +92,18 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
 
 # --- Logic: Topic Suggester ---
 def suggest_topics(sample_keywords, engine, config):
-    system_instruction = "You are a technical SEO specialist. Output ONLY the requested blocks. Do not include any conversational text, introductions, or formatting like bolding or bullet points."
+    # Differentiate instructions for Gemini vs Ollama to balance cost/detail
+    if engine == "Gemini":
+        system_instruction = "You are a technical SEO specialist. Provide a CONCISE list of topics. Output ONLY the requested blocks."
+        limit_text = "Aim for a maximum of 5 primary TOPICS and up to 3 subtopics per topic."
+    else:
+        system_instruction = "You are a technical SEO specialist. Output ONLY the requested blocks. Do not include any conversational text, introductions, or formatting."
+        limit_text = "Provide a comprehensive and diverse list of TOPICS and up to 5 subtopics per topic."
+
     prompt = f"""
-    Analyse these keywords and provide a comprehensive and diverse list of:
-    1. Primary TOPICS.
-    2. Deduplicated, concise SUBTOPIC 'stems' (up to 5 per topic).
+    Analyse these keywords and provide:
+    1. Primary TOPICS ({limit_text}).
+    2. Deduplicated, concise SUBTOPIC 'stems'.
 
     Keywords:
     {'\n'.join(sample_keywords)}
