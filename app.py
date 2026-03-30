@@ -55,7 +55,11 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
         payload["messages"][0]["content"] += f" Return the data as a JSON object matching this schema: {response_schema.model_json_schema()}"
 
     try:
-        response = requests.post(f"{url}/api/chat", json=payload, timeout=120)
+        # Explicitly bypass proxies for local connections
+        session = requests.Session()
+        session.trust_env = False 
+        
+        response = session.post(f"{url}/api/chat", json=payload, timeout=120)
         response.raise_for_status()
         data = response.json()
         content = data.get("message", {}).get("content", "")
