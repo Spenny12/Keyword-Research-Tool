@@ -96,7 +96,16 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
     else:
         c_topics = ",".join([t.strip() for t in topics.split("\n") if t.strip()])
         c_subtopics = ",".join([s.strip() for s in subtopics.split("\n") if s.strip()])
-        system_instruction = f"Classify keywords into Topics: [{c_topics}] and Subtopics: [{c_subtopics}]. Return ONLY the Topic and Subtopic names exactly as provided in the lists. Output JSON."
+        system_instruction = f"""
+        Classify keywords into Topics: [{c_topics}] and Subtopics: [{c_subtopics}].
+
+        STRICT RULES:
+        1. Only assign a Subtopic if it is HIGHLY RELEVANT to the keyword.
+        2. If no subtopic in the list is a good fit (e.g. a 'concrete' keyword matching a 'porcelain' subtopic), you MUST return 'N/A' for the subtopic.
+        3. Do not 'force' a match. Accuracy is more important than coverage for subtopics.
+        4. Return ONLY the Topic and Subtopic names exactly as provided.
+        Output JSON.
+        """
         schema = TopicBatchResponse
 
     final_results = [None] * len(keywords)
@@ -234,7 +243,7 @@ else:
                 else:
                     with st.spinner("Analysing sample..."):
                         unique_kws = [kw for kw in df[target_col].astype(str).unique() if kw.strip().lower() not in ['nan', 'null', '']]
-                        sample = pd.Series(unique_kws).sample(n=min(150, len(unique_kws))).tolist()
+                        sample = pd.Series(unique_kws).sample(n=min(200, len(unique_kws))).tolist()
                         st.session_state.ai_suggestions = suggest_topics(sample, api_key)
         with col2:
             if st.button("🗑️ Clear Suggestions"):
