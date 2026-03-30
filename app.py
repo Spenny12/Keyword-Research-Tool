@@ -4,10 +4,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 from typing import List, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
-import requests
-import json
 
 # --- UI Configuration ---
 st.set_page_config(page_title="SEO Classifier", layout="wide")
@@ -37,60 +34,10 @@ if "topics" not in st.session_state:
 if "subtopics" not in st.session_state:
     st.session_state.subtopics = ""
 
-# --- Logic: Ollama Helper ---
-def call_ollama(prompt, system_instruction, model, url, response_schema=None):
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": False,
-        "options": {"temperature": 0.0}
-    }
-    
-    if response_schema:
-        payload["format"] = "json"
-        if "Intent" in str(response_schema):
-            example = '{"results": [{"idx": 0, "i": "1", "f": "A"}, {"idx": 1, "i": "5", "f": "T"}]}'
-        else:
-            example = '{"results": [{"idx": 0, "t": "Topic", "s": "Subtopic"}, {"idx": 1, "t": "Topic", "s": "Subtopic"}]}'
-        payload["messages"][0]["content"] += f" Return a JSON object with a 'results' key. YOU MUST INCLUDE THE 'idx' FOR EVERY ITEM. Example: {example}"
-
-    try:
-        session = requests.Session()
-        session.trust_env = False 
-        response = session.post(f"{url}/api/chat", json=payload, timeout=120)
-        response.raise_for_status()
-        data = response.json()
-        content = data.get("message", {}).get("content", "")
-        
-        print(f"--- OLLAMA DEBUG ({model}) ---")
-        print(f"Content: {content[:200]}...")
-        
-        if response_schema:
-            try:
-                return response_schema.model_validate_json(content)
-            except Exception:
-                try:
-                    import re
-                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                    if json_match:
-                        return response_schema.model_validate_json(json_match.group(0))
-                except Exception: pass
-                raise Exception(f"Failed to parse Ollama JSON: {content[:100]}...")
-        return content
-    except Exception as e:
-        raise Exception(f"Ollama Error: {e}")
-
 # --- Logic: Topic Suggester ---
-def suggest_topics(sample_keywords, engine, config):
-    if engine == "Gemini":
-        system_instruction = "You are a technical SEO specialist. Provide a CONCISE list of topics. Output ONLY the requested blocks."
-        limit_text = "Aim for a maximum of 5 primary TOPICS and up to 3 subtopics per topic."
-    else:
-        system_instruction = "You are a technical SEO specialist. Output ONLY the requested blocks. Do not include any conversational text, introductions, or formatting."
-        limit_text = "Provide a comprehensive and diverse list of TOPICS and up to 5 subtopics per topic."
+def suggest_topics(sample_keywords, api_key):
+    system_instruction = "You are a technical SEO specialist. Provide a CONCISE list of topics. Output ONLY the requested blocks."
+    limit_text = "Aim for a maximum of 5 primary TOPICS and up to 3 subtopics per topic."
 
     prompt = f"""
     Analyse these keywords and provide:
@@ -118,24 +65,20 @@ def suggest_topics(sample_keywords, engine, config):
     """
     
     try:
-        if engine == "Gemini":
-            client = genai.Client(api_key=config["api_key"])
-            response = client.models.generate_content(
-                model="gemini-3-flash-preview",
-                config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.0),
-                contents=prompt
-            )
-            return response.text
-        else:
-            return call_ollama(prompt, system_instruction, config["model"], config["url"])
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.0),
+            contents=prompt
+        )
+        return response.text
     except Exception as e:
         return f"Error: {e}"
 
-# --- Logic: Generic Batch Processor ---
-def process_batches(keywords, engine, config, mode, topics="", subtopics=""):
+# --- Logic: Batch Processing ---
+def process_batches(keywords, api_key, mode, topics="", subtopics=""):
     model_id = "gemini-3-flash-preview"
-    batch_size = 50 if engine == "Gemini" else 10
-    max_workers = 5 if engine == "Gemini" else 1
+    batch_size = 50
     
     intent_map = {
         "1": "definition/factual", "2": "examples/list", "3": "comparison/pros-cons",
@@ -154,97 +97,63 @@ def process_batches(keywords, engine, config, mode, topics="", subtopics=""):
         system_instruction = f"Classify keywords into Topics: [{c_topics}] and Subtopics: [{c_subtopics}]. Return ONLY the Topic and Subtopic names exactly as provided in the lists. Output JSON."
         schema = TopicBatchResponse
 
-    cache = None
-    if engine == "Gemini":
-        try:
-            client = genai.Client(api_key=config["api_key"])
-            cache = client.caches.create(
-                model=model_id,
-                config=types.CacheConfig(system_instruction=system_instruction, ttl_seconds=3600)
-            )
-        except Exception: pass
-
     final_results = [None] * len(keywords)
-    # 0: pending, 1: completed, 2: failed_permanent, 3: retry_skip
-    keyword_status = [0] * len(keywords)
+    keyword_status = [0] * len(keywords) # 0: pending, 1: done, 2: failed
     
     status_text = st.empty()
     progress_bar = st.progress(0.0)
+    
+    chunks = []
+    for i in range(0, len(keywords), batch_size):
+        chunks.append([(j, keywords[j]) for j in range(i, min(i + batch_size, len(keywords)))])
 
-    for pass_count in range(1, 11):
-        to_process_indices = [i for i, status in enumerate(keyword_status) if status in [0, 3]]
-        if not to_process_indices: break
+    total_chunks = len(chunks)
+    
+    for idx, chunk in enumerate(chunks):
+        status_text.text(f"Processing chunk {idx+1} of {total_chunks}...")
         
-        if pass_count > 1:
-            time.sleep(min(pass_count * 2, 10))
-
-        chunks = []
-        for i in range(0, len(to_process_indices), batch_size):
-            chunk_indices = to_process_indices[i : i + batch_size]
-            chunks.append([(idx, keywords[idx]) for idx in chunk_indices])
-
-        total_chunks = len(chunks)
-        completed_chunks = 0
-        status_text.text(f"Pass {pass_count}: Processing {len(to_process_indices)} keywords using {engine}...")
-
-        def process_chunk(chunk):
-            chunk_out = []
+        formatted = "\n".join([f"{idx_in_batch}|{kw}" for idx_in_batch, (global_idx, kw) in enumerate(chunk)])
+        mapping = {idx_in_batch: global_idx for idx_in_batch, (global_idx, kw) in enumerate(chunk)}
+        
+        retries = 3
+        success = False
+        
+        while retries > 0 and not success:
             try:
-                formatted = "\n".join([f"{idx_in_batch}|{kw}" for idx_in_batch, (global_idx, kw) in enumerate(chunk)])
-                mapping = {idx_in_batch: global_idx for idx_in_batch, (global_idx, kw) in enumerate(chunk)}
+                client = genai.Client(api_key=api_key)
+                res = client.models.generate_content(
+                    model=model_id,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        response_mime_type="application/json",
+                        response_schema=schema,
+                        temperature=0.0,
+                    ),
+                    contents=formatted
+                )
+                parsed = res.parsed
                 
-                if engine == "Gemini":
-                    client = genai.Client(api_key=config["api_key"])
-                    res = client.models.generate_content(
-                        model=model_id,
-                        config=types.GenerateContentConfig(
-                            system_instruction=None if cache else system_instruction,
-                            cached_content=cache.name if cache else None,
-                            response_mime_type="application/json",
-                            response_schema=schema,
-                            temperature=0.0,
-                        ),
-                        contents=formatted
-                    )
-                    parsed = res.parsed
-                else:
-                    parsed = call_ollama(formatted, system_instruction, config["model"], config["url"], response_schema=schema)
-                
-                batch_data = {}
                 if parsed and parsed.results:
                     for item in parsed.results:
-                        if mode == "intent":
-                            batch_data[item.idx] = {"Intent": intent_map.get(item.i, "unclear"), "Funnel": funnel_map.get(item.f.upper(), "Awareness")}
-                        else:
-                            batch_data[item.idx] = {"Topic": item.t, "Subtopic": item.s}
-                
-                for idx_in_batch in range(len(chunk)):
-                    g_idx = mapping[idx_in_batch]
-                    data = batch_data.get(idx_in_batch)
-                    if data:
-                        chunk_out.append((g_idx, data, 1)) # completed
-                    else:
-                        new_status = 2 if keyword_status[g_idx] == 3 else 3
-                        chunk_out.append((g_idx, None, new_status))
+                        g_idx = mapping.get(item.idx)
+                        if g_idx is not None:
+                            if mode == "intent":
+                                final_results[g_idx] = {"Intent": intent_map.get(item.i, "unclear"), "Funnel": funnel_map.get(item.f.upper(), "Awareness")}
+                            else:
+                                final_results[g_idx] = {"Topic": item.t, "Subtopic": item.s}
+                            keyword_status[g_idx] = 1
+                    success = True
             except Exception as e:
-                error_msg = str(e).lower()
-                is_server_error = any(code in error_msg for code in ["503", "500", "504", "overloaded", "deadline", "timeout", "quota", "429"])
-                for global_idx, kw in chunk:
-                    new_status = 3 if is_server_error else 2
-                    chunk_out.append((global_idx, None, new_status))
-            return chunk_out
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(process_chunk, c) for c in chunks]
-            for future in as_completed(futures):
-                try:
-                    for g_idx, data, new_status in future.result(timeout=180):
-                        if data is not None:
-                            final_results[g_idx] = data
-                        keyword_status[g_idx] = new_status
-                except Exception: pass
-                completed_chunks += 1
-                progress_bar.progress(min(completed_chunks / total_chunks, 1.0))
+                retries -= 1
+                if retries > 0:
+                    time.sleep(5)
+                else:
+                    st.warning(f"Chunk {idx+1} failed: {e}")
+                    for _, kw_tuple in enumerate(chunk):
+                        g_idx = kw_tuple[0]
+                        keyword_status[g_idx] = 2
+        
+        progress_bar.progress((idx + 1) / total_chunks)
 
     default_data = {"Intent": "error", "Funnel": "N/A"} if mode == "intent" else {"Topic": "error", "Subtopic": "error"}
     return [r if r is not None else default_data for r in final_results]
@@ -254,39 +163,32 @@ st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to", ["Readme", "1. Intent Classifier", "2. Topic Mapper"])
 
 st.sidebar.markdown("---")
-st.sidebar.title("Engine Configuration")
-engine = st.sidebar.radio("Select Engine", ["Gemini", "Ollama"], help="Choose between Cloud (Gemini) or Local (Ollama) processing.")
-
-engine_config = {}
-if engine == "Gemini":
-    engine_config["api_key"] = st.sidebar.text_input("Gemini API Key", type="password", help="Enter your Google Gemini API Key. Speak to Tom if you don't have one.")
-else:
-    engine_config["url"] = st.sidebar.text_input("Ollama URL", value="http://127.0.0.1:11434", help="Local address of your Ollama server.")
-    engine_config["model"] = st.sidebar.text_input("Ollama Model", value="llama3", help="The model name installed in Ollama (e.g., llama3, mistral, gemma).")
+api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Enter your Google Gemini API Key. Speak to Tom if you don't have one.")
 
 if page == "Readme":
     st.title("📖 How to Use This Tool")
     st.markdown("""
     ### Workflow Overview
-    1.  **Gather Keywords:** Prepare a clean list of search queries in a `.csv` file.
-    2.  **Select Engine:** In the sidebar, choose between **Gemini** (Cloud) or **Ollama** (Local).
-        *   For Gemini: Speak to Tom for an API key.
-        *   For Ollama: Ensure Ollama is running on your PC with the correct model installed.
+    Follow these steps to classify your keywords accurately and efficiently:
+
+    1.  **Gather Keywords:** Prepare a clean list of search queries in a `.csv` file. Remove unnecessary data like search volumes to keep it simple.
+    2.  **API Keys:** Speak to Tom to obtain a valid Gemini API key.
     3.  **Step 1 - Intent Classification:**
-        *   Go to **'1. Intent Classifier'**.
+        *   Navigate to **'1. Intent Classifier'**.
         *   Upload your CSV and select the keyword column.
-        *   Run the classification and download `intent_results.csv`.
+        *   Run the classifier and download `intent_results.csv`.
     4.  **Step 2 - Topic Mapping:**
-        *   Go to **'2. Topic Mapper'**.
+        *   Navigate to **'2. Topic Mapper'**.
         *   Upload the file from Step 1.
-        *   Generate AI Suggestions (optional) to build your strategy.
+        *   **Generate AI Suggestions** (optional) to build your strategy.
+        *   Review and edit the topics in the sidebar.
         *   Run Topic Mapping and export the final report.
     """)
     st.info("💡 **Pro Tip:** Splitting the process into two steps ensures higher accuracy and prevents timeouts on large datasets.")
 
 elif page == "1. Intent Classifier":
     st.title("Step 1: Intent & Funnel Classifier")
-    st.info(f"Using {engine} engine to classify Search Intent and Marketing Funnel stage.")
+    st.info("Classify Search Intent and Marketing Funnel stage using Gemini AI.")
     
     uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"], key="intent_upload")
     if uploaded_file:
@@ -294,13 +196,13 @@ elif page == "1. Intent Classifier":
         target_col = st.selectbox("Keyword Column", df.columns, key="intent_col")
         
         if st.button("Run Intent Classification"):
-            if engine == "Gemini" and not engine_config.get("api_key"):
+            if not api_key:
                 st.error("Missing Gemini API Key.")
             else:
-                with st.spinner(f"Classifying via {engine}..."):
+                with st.spinner("Classifying..."):
                     raw_kws = df[target_col].astype(str).tolist()
                     unique_kws = list(dict.fromkeys([kw for kw in raw_kws if kw.strip() and kw.lower() != 'nan']))
-                    results = process_batches(unique_kws, engine, engine_config, mode="intent")
+                    results = process_batches(unique_kws, api_key, mode="intent")
                     
                     results_map = dict(zip(unique_kws, results))
                     final_results = [results_map.get(kw, {"Intent": "N/A", "Funnel": "N/A"}) for kw in raw_kws]
@@ -314,7 +216,7 @@ elif page == "1. Intent Classifier":
 
 else:
     st.title("Step 2: Custom Topic Mapper")
-    st.info(f"Using {engine} engine to add custom Topic and Subtopic categorisation.")
+    st.info("Add custom Topic and Subtopic categorisation using your predefined strategy.")
     
     with st.sidebar:
         st.markdown("---")
@@ -330,13 +232,12 @@ else:
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.button("✨ Generate AI Suggestions"):
-                if engine == "Gemini" and not engine_config.get("api_key"): st.error("Missing Gemini API Key.")
+                if not api_key: st.error("Missing Gemini API Key.")
                 else:
                     with st.spinner("Analysing sample..."):
                         unique_kws = [kw for kw in df[target_col].astype(str).unique() if kw.strip().lower() not in ['nan', 'null', '']]
-                        sample_size = 200 if engine == "Ollama" else 150
-                        sample = pd.Series(unique_kws).sample(n=min(sample_size, len(unique_kws))).tolist()
-                        st.session_state.ai_suggestions = suggest_topics(sample, engine, engine_config)
+                        sample = pd.Series(unique_kws).sample(n=min(150, len(unique_kws))).tolist()
+                        st.session_state.ai_suggestions = suggest_topics(sample, api_key)
         with col2:
             if st.button("🗑️ Clear Suggestions"):
                 st.session_state.ai_suggestions = ""
@@ -346,13 +247,13 @@ else:
             st.code(st.session_state.ai_suggestions)
 
         if st.button("Run Topic Mapping"):
-            if engine == "Gemini" and not engine_config.get("api_key"): st.error("Missing Gemini API Key.")
+            if not api_key: st.error("Missing Gemini API Key.")
             elif not st.session_state.topics: st.error("Provide topics in the sidebar.")
             else:
-                with st.spinner(f"Mapping via {engine}..."):
+                with st.spinner("Mapping topics..."):
                     raw_kws = df[target_col].astype(str).tolist()
                     unique_kws = list(dict.fromkeys([kw for kw in raw_kws if kw.strip() and kw.lower() != 'nan']))
-                    results = process_batches(unique_kws, engine, engine_config, mode="topic", 
+                    results = process_batches(unique_kws, api_key, mode="topic", 
                                            topics=st.session_state.topics, subtopics=st.session_state.subtopics)
                     
                     results_map = dict(zip(unique_kws, results))
