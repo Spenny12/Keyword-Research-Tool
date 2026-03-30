@@ -61,8 +61,18 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
         content = data.get("message", {}).get("content", "")
         
         if response_schema:
-            # Parse and validate against the pydantic model
-            return response_schema.model_validate_json(content)
+            try:
+                # Try strict validation
+                return response_schema.model_validate_json(content)
+            except Exception:
+                # Fallback: Try to find a JSON-like block if validation fails
+                try:
+                    import re
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        return response_schema.model_validate_json(json_match.group(0))
+                except Exception: pass
+                raise Exception(f"Failed to parse Ollama JSON: {content[:100]}...")
         return content
     except Exception as e:
         raise Exception(f"Ollama Error: {e}")
