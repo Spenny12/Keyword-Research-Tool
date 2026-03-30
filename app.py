@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+import re
 
 # --- UI Configuration ---
 st.set_page_config(page_title="SEO Classifier", layout="wide")
