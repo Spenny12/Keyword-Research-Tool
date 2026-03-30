@@ -4,6 +4,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 # --- UI Configuration ---
@@ -78,7 +79,8 @@ def suggest_topics(sample_keywords, api_key):
 # --- Logic: Batch Processing ---
 def process_batches(keywords, api_key, mode, topics="", subtopics=""):
     model_id = "gemini-3-flash-preview"
-    batch_size = 50
+    batch_size = 125
+    max_workers = 5
     
     intent_map = {
         "1": "definition/factual", "2": "examples/list", "3": "comparison/pros-cons",
@@ -98,7 +100,6 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
         schema = TopicBatchResponse
 
     final_results = [None] * len(keywords)
-    keyword_status = [0] * len(keywords) # 0: pending, 1: done, 2: failed
     
     status_text = st.empty()
     progress_bar = st.progress(0.0)
@@ -108,52 +109,49 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
         chunks.append([(j, keywords[j]) for j in range(i, min(i + batch_size, len(keywords)))])
 
     total_chunks = len(chunks)
+    completed_chunks = 0
     
-    for idx, chunk in enumerate(chunks):
-        status_text.text(f"Processing chunk {idx+1} of {total_chunks}...")
-        
-        formatted = "\n".join([f"{idx_in_batch}|{kw}" for idx_in_batch, (global_idx, kw) in enumerate(chunk)])
-        mapping = {idx_in_batch: global_idx for idx_in_batch, (global_idx, kw) in enumerate(chunk)}
-        
-        retries = 3
-        success = False
-        
-        while retries > 0 and not success:
-            try:
-                client = genai.Client(api_key=api_key)
-                res = client.models.generate_content(
-                    model=model_id,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        response_mime_type="application/json",
-                        response_schema=schema,
-                        temperature=0.0,
-                    ),
-                    contents=formatted
-                )
-                parsed = res.parsed
-                
-                if parsed and parsed.results:
-                    for item in parsed.results:
-                        g_idx = mapping.get(item.idx)
-                        if g_idx is not None:
-                            if mode == "intent":
-                                final_results[g_idx] = {"Intent": intent_map.get(item.i, "unclear"), "Funnel": funnel_map.get(item.f.upper(), "Awareness")}
-                            else:
-                                final_results[g_idx] = {"Topic": item.t, "Subtopic": item.s}
-                            keyword_status[g_idx] = 1
-                    success = True
-            except Exception as e:
-                retries -= 1
-                if retries > 0:
-                    time.sleep(5)
-                else:
-                    st.warning(f"Chunk {idx+1} failed: {e}")
-                    for _, kw_tuple in enumerate(chunk):
-                        g_idx = kw_tuple[0]
-                        keyword_status[g_idx] = 2
-        
-        progress_bar.progress((idx + 1) / total_chunks)
+    def process_chunk(chunk):
+        chunk_out = []
+        try:
+            formatted = "\n".join([f"{idx_in_batch}|{kw}" for idx_in_batch, (global_idx, kw) in enumerate(chunk)])
+            mapping = {idx_in_batch: global_idx for idx_in_batch, (global_idx, kw) in enumerate(chunk)}
+
+            client = genai.Client(api_key=api_key)
+            res = client.models.generate_content(
+                model=model_id,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                    temperature=0.0,
+                ),
+                contents=formatted
+            )
+            parsed = res.parsed
+
+            if parsed and parsed.results:
+                for item in parsed.results:
+                    g_idx = mapping.get(item.idx)
+                    if g_idx is not None:
+                        if mode == "intent":
+                            data = {"Intent": intent_map.get(item.i, "unclear"), "Funnel": funnel_map.get(item.f.upper(), "Awareness")}
+                        else:
+                            data = {"Topic": item.t, "Subtopic": item.s}
+                        chunk_out.append((g_idx, data))
+        except Exception: pass
+        return chunk_out
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_chunk, c): c for c in chunks}
+        for future in as_completed(futures):
+            results = future.result()
+            for g_idx, data in results:
+                final_results[g_idx] = data
+
+            completed_chunks += 1
+            progress_bar.progress(completed_chunks / total_chunks)
+            status_text.text(f"Processed batch {completed_chunks} of {total_chunks}...")
 
     default_data = {"Intent": "error", "Funnel": "N/A"} if mode == "intent" else {"Topic": "error", "Subtopic": "error"}
     return [r if r is not None else default_data for r in final_results]
