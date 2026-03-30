@@ -135,7 +135,7 @@ def suggest_topics(sample_keywords, engine, config):
 # --- Logic: Generic Batch Processor ---
 def process_batches(keywords, engine, config, mode, topics="", subtopics=""):
     model_id = "gemini-3-flash-preview"
-    batch_size = 50 
+    batch_size = 50 if engine == "Gemini" else 10
     max_workers = 5 if engine == "Gemini" else 1 # Local Ollama should be sequential for stability
     
     intent_map = {
