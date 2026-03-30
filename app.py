@@ -38,7 +38,7 @@ if "subtopics" not in st.session_state:
 # --- Logic: Topic Suggester ---
 def suggest_topics(sample_keywords, api_key):
     system_instruction = "You are a technical SEO specialist. Provide a CONCISE list of topics. Output ONLY the requested blocks."
-    limit_text = "Aim for a maximum of 5 primary TOPICS and up to 3 subtopics per topic."
+    limit_text = "Aim for a maximum of 5 primary TOPICS and up to 15 subtopics."
 
     prompt = f"""
     Analyse these keywords and provide:
