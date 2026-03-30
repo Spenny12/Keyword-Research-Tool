@@ -79,8 +79,10 @@ def suggest_topics(sample_keywords, api_key):
 # --- Logic: Batch Processing ---
 def process_batches(keywords, api_key, mode, topics="", subtopics=""):
     model_id = "gemini-3-flash-preview"
+    # Smaller batch size for more stability
     batch_size = 125
-    max_workers = 5
+    # Lower concurrency to avoid 500/503 errors
+    max_workers = 2
     
     intent_map = {
         "1": "definition/factual", "2": "examples/list", "3": "comparison/pros-cons",
@@ -101,8 +103,8 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
 
         STRICT RULES:
         1. Only assign a Subtopic if it is HIGHLY RELEVANT to the keyword.
-        2. If no subtopic in the list is a good fit (e.g. a 'concrete' keyword matching a 'porcelain' subtopic), you MUST return 'N/A' for the subtopic.
-        3. Do not 'force' a match. Accuracy is more important than coverage for subtopics.
+        2. If no subtopic in the list is a good fit, return 'N/A' for the subtopic.
+        3. Accuracy is more important than coverage.
         4. Return ONLY the Topic and Subtopic names exactly as provided.
         Output JSON.
         """
@@ -122,49 +124,48 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
     
     def process_chunk(chunk):
         chunk_out = []
-        try:
-            formatted = "\n".join([f"{idx_in_batch}|{kw}" for idx_in_batch, (global_idx, kw) in enumerate(chunk)])
-            mapping = {idx_in_batch: global_idx for idx_in_batch, (global_idx, kw) in enumerate(chunk)}
+        formatted = "\n".join([f"{idx_in_batch}|{kw}" for idx_in_batch, (global_idx, kw) in enumerate(chunk)])
+        mapping = {idx_in_batch: global_idx for idx_in_batch, (global_idx, kw) in enumerate(chunk)}
 
-            client = genai.Client(api_key=api_key)
-            res = client.models.generate_content(
-                model=model_id,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                    response_schema=schema,
-                    temperature=0.0,
-                ),
-                contents=formatted
-            )
-            parsed = res.parsed
+        # Internal retry loop for transient ServerErrors
+        for attempt in range(3):
+            try:
+                # Add a tiny bit of jittered delay to avoid hitting the API too hard
+                if max_workers > 1:
+                    time.sleep(attempt * 2)
 
-            if parsed and parsed.results:
-                for item in parsed.results:
-                    g_idx = mapping.get(item.idx)
-                    if g_idx is not None:
-                        if mode == "intent":
-                            data = {"Intent": intent_map.get(item.i, "unclear"), "Funnel": funnel_map.get(item.f.upper(), "Awareness")}
-                        else:
-                            data = {"Topic": item.t, "Subtopic": item.s}
-                        chunk_out.append((g_idx, data))
-            else:
-                # Log if parsing was successful but results were empty
-                print(f"Empty results for chunk starting with global index {chunk[0][0]}")
-        except Exception as e:
-            # Descriptive error for debugging
-            err_type = type(e).__name__
-            err_msg = str(e)
-            print(f"CRITICAL: Chunk error in {mode} mode: [{err_type}] {err_msg}")
-            
-            # Return specific error info to the UI for at least one item in the chunk
-            for global_idx, kw in chunk:
-                error_data = {
-                    "Intent": f"ERR: {err_type}", "Funnel": "N/A"
-                } if mode == "intent" else {
-                    "Topic": f"ERR: {err_type}", "Subtopic": "N/A"
-                }
-                chunk_out.append((global_idx, error_data))
+                client = genai.Client(api_key=api_key)
+                res = client.models.generate_content(
+                    model=model_id,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        response_mime_type="application/json",
+                        response_schema=schema,
+                        temperature=0.0,
+                    ),
+                    contents=formatted
+                )
+                parsed = res.parsed
+
+                if parsed and parsed.results:
+                    for item in parsed.results:
+                        g_idx = mapping.get(item.idx)
+                        if g_idx is not None:
+                            if mode == "intent":
+                                data = {"Intent": intent_map.get(item.i, "unclear"), "Funnel": funnel_map.get(item.f.upper(), "Awareness")}
+                            else:
+                                data = {"Topic": item.t, "Subtopic": item.s}
+                            chunk_out.append((g_idx, data))
+                    return chunk_out # Success!
+            except Exception as e:
+                err_type = type(e).__name__
+                if attempt == 2: # Last attempt failed
+                    print(f"CRITICAL: Chunk error after 3 attempts: [{err_type}] {e}")
+                    for global_idx, kw in chunk:
+                        error_data = {"Intent": f"ERR: {err_type}", "Funnel": "N/A"} if mode == "intent" else {"Topic": f"ERR: {err_type}", "Subtopic": "N/A"}
+                        chunk_out.append((global_idx, error_data))
+                else:
+                    time.sleep(5) # Wait before retry
         return chunk_out
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
