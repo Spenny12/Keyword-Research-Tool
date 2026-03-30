@@ -158,11 +158,17 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
                             chunk_out.append((g_idx, data))
                     return chunk_out # Success!
             except Exception as e:
+                err_msg = str(e)
+                # Try to extract HTTP code (e.g. 503, 429, 500)
+                code_match = re.search(r'\b(4\d{2}|5\d{2})\b', err_msg)
+                err_code = f" {code_match.group(1)}" if code_match else ""
                 err_type = type(e).__name__
+
                 if attempt == 2: # Last attempt failed
-                    print(f"CRITICAL: Chunk error after 3 attempts: [{err_type}] {e}")
+                    print(f"CRITICAL: Chunk error after 3 attempts: [{err_type}{err_code}] {err_msg}")
                     for global_idx, kw in chunk:
-                        error_data = {"Intent": f"ERR: {err_type}", "Funnel": "N/A"} if mode == "intent" else {"Topic": f"ERR: {err_type}", "Subtopic": "N/A"}
+                        display_err = f"ERR: {err_type}{err_code}"
+                        error_data = {"Intent": display_err, "Funnel": "N/A"} if mode == "intent" else {"Topic": display_err, "Subtopic": "N/A"}
                         chunk_out.append((global_idx, error_data))
                 else:
                     time.sleep(5) # Wait before retry
