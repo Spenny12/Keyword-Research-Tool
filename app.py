@@ -187,7 +187,7 @@ page = st.sidebar.radio("Go to", ["Readme", "1. Intent Classifier", "2. Topic Ma
 api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Enter your Google Gemini API Key. Speak to Tom if you don't have one.")
 
 if page == "Readme":
-    st.title("📖 How to Use This Tool")
+    st.title("How to Use This Tool")
     st.markdown("""
     ### Workflow Overview
     Follow these steps to classify your keywords accurately and efficiently:
@@ -211,7 +211,6 @@ if page == "Readme":
         *   Run the Topic Mapper.
         *   Export the final results for your report.
     """)
-    st.info("💡 **Pro Tip:** Splitting the process into two steps ensures higher accuracy and prevents timeouts on large datasets.")
 
 elif page == "1. Intent Classifier":
     st.title("Step 1: Intent & Funnel Classifier")
@@ -241,7 +240,7 @@ elif page == "1. Intent Classifier":
                     
                     st.success("Complete!")
                     st.dataframe(df)
-                    st.download_button("📥 Download Intent Results", df.to_csv(index=False), "intent_results.csv", "text/csv", 
+                    st.download_button("Download Intent Results", df.to_csv(index=False), "intent_results.csv", "text/csv",
                                        help="Download the results to use in Step 2.")
 
 else:
@@ -273,7 +272,7 @@ else:
                         sample = pd.Series(unique_kws).sample(n=min(80, len(unique_kws))).tolist()
                         st.session_state.ai_suggestions = suggest_topics(sample, api_key)
         with col2:
-            if st.button("🗑️ Clear Suggestions", help="Clears the AI suggested text."):
+            if st.button("Clear Suggestions", help="Clears the AI suggested text."):
                 st.session_state.ai_suggestions = ""
                 st.rerun()
 
@@ -299,5 +298,5 @@ else:
                     
                     st.success("Complete!")
                     st.dataframe(df)
-                    st.download_button("📥 Download Final Results", df.to_csv(index=False), "final_seo_results.csv", "text/csv", 
+                    st.download_button("Download Final Results", df.to_csv(index=False), "final_seo_results.csv", "text/csv",
                                        help="Download your fully classified keyword report.")
