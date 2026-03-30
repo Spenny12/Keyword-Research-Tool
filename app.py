@@ -69,7 +69,7 @@ def suggest_topics(sample_keywords, api_key):
     try:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model="gemini-3.1-flash-lite-preview",
             config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.0),
             contents=prompt
         )
@@ -79,9 +79,9 @@ def suggest_topics(sample_keywords, api_key):
 
 # --- Logic: Batch Processing ---
 def process_batches(keywords, api_key, mode, topics="", subtopics=""):
-    model_id = "gemini-3-flash-preview"
+    model_id = "gemini-3.1-flash-lite-preview"
     # Smaller batch size for more stability
-    batch_size = 125
+    batch_size = 100
     # Lower concurrency to avoid 500/503 errors
     max_workers = 2
     
@@ -111,6 +111,9 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
         """
         schema = TopicBatchResponse
 
+    if not keywords:
+        return []
+
     final_results = [None] * len(keywords)
     
     status_text = st.empty()
@@ -139,7 +142,7 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
                 res = client.models.generate_content(
                     model=model_id,
                     config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
+                        system_instruction=system_instruction + "\nIMPORTANT: You must return a JSON object with a 'results' key containing a list of objects. Each object MUST have an 'idx' key (matching the index provided) and the appropriate classification keys.",
                         response_mime_type="application/json",
                         response_schema=schema,
                         temperature=0.0,
