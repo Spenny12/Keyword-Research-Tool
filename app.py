@@ -53,11 +53,11 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
         # Simplified instruction for local models
         payload["format"] = "json"
         if "Intent" in str(response_schema):
-            example = '{"results": [{"idx": 0, "i": "1", "f": "A"}]}'
+            example = '{"results": [{"idx": 0, "i": "1", "f": "A"}, {"idx": 1, "i": "5", "f": "T"}]}'
         else:
-            example = '{"results": [{"idx": 0, "t": "Topic", "s": "Subtopic"}]}'
+            example = '{"results": [{"idx": 0, "t": "Topic", "s": "Subtopic"}, {"idx": 1, "t": "Topic", "s": "Subtopic"}]}'
         
-        payload["messages"][0]["content"] += f" Return a JSON object with a 'results' key. Example: {example}"
+        payload["messages"][0]["content"] += f" Return a JSON object with a 'results' key. YOU MUST INCLUDE THE 'idx' FOR EVERY ITEM. Example: {example}"
 
     try:
         # Explicitly bypass proxies for local connections
