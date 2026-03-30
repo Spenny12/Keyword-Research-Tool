@@ -83,7 +83,7 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
 
 # --- Logic: Topic Suggester ---
 def suggest_topics(sample_keywords, engine, config):
-    system_instruction = "You are a technical SEO specialist. Analyse keywords to provide structured topic and subtopic recommendations. Use British English and be concise."
+    system_instruction = "You are a technical SEO specialist. Output ONLY the requested blocks. Do not include any conversational text, introductions, or formatting like bolding or bullet points."
     prompt = f"""
     Analyse these keywords and provide:
     1. A list of primary TOPICS.
@@ -92,12 +92,21 @@ def suggest_topics(sample_keywords, engine, config):
     Keywords:
     {'\n'.join(sample_keywords)}
 
-    Output as two clean blocks for copy-pasting:
+    Output EXACTLY in this format:
     --- TOPICS BLOCK ---
-    (One per line, no symbols)
+    (Topic Name 1)
+    (Topic Name 2)
 
     --- SUBTOPICS BLOCK ---
-    (One per line, no symbols)
+    (Subtopic Stem 1)
+    (Subtopic Stem 2)
+    (Subtopic Stem 3)
+
+    Rules:
+    - No descriptions or colon-separated lists for subtopics. 
+    - One per line.
+    - No bolding.
+    - No introductory text.
     """
     
     try:
