@@ -183,19 +183,48 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
 
 # --- Sidebar Navigation ---
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["1. Intent Classifier", "2. Topic Mapper"])
-api_key = st.sidebar.text_input("Gemini API Key", type="password")
+page = st.sidebar.radio("Go to", ["Readme", "1. Intent Classifier", "2. Topic Mapper"])
+api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Enter your Google Gemini API Key. Speak to Tom if you don't have one.")
 
-if page == "1. Intent Classifier":
+if page == "Readme":
+    st.title("📖 How to Use This Tool")
+    st.markdown("""
+    ### Workflow Overview
+    Follow these steps to classify your keywords accurately and efficiently:
+
+    1.  **Gather Keywords:** Prepare a clean list of keywords. It is best to remove unnecessary data like search volumes or CPC at this stage to keep the file size manageable.
+    2.  **API Keys:** Speak to Tom to obtain a valid Gemini API key.
+    3.  **Step 1 - Intent Classification:**
+        *   Navigate to **'1. Intent Classifier'**.
+        *   Upload your keyword list as a `.csv` file.
+        *   Select the column containing your keywords.
+        *   Run the classifier and wait for the results.
+    4.  **Export Data:** Download the resulting data as a `.csv` (e.g., `intent_results.csv`).
+    5.  **Step 2 - Topic Mapping:**
+        *   Navigate to **'2. Topic Mapper'**.
+        *   Upload the exported `.csv` from Step 1.
+    6.  **AI Suggestions:**
+        *   Click **'Generate AI Suggestions'** to see recommended topics.
+        *   Review these suggestions carefully.
+        *   Manually add or remove topics in the sidebar based on your own validation and SEO strategy.
+    7.  **Final Run:**
+        *   Run the Topic Mapper.
+        *   Export the final results for your report.
+    """)
+    st.info("💡 **Pro Tip:** Splitting the process into two steps ensures higher accuracy and prevents timeouts on large datasets.")
+
+elif page == "1. Intent Classifier":
     st.title("Step 1: Intent & Funnel Classifier")
     st.info("Upload your raw keyword list to classify Search Intent and Marketing Funnel stage.")
     
-    uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"], key="intent_upload")
+    uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"], key="intent_upload", 
+                                     help="Upload a standard CSV file containing your keyword list.")
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
-        target_col = st.selectbox("Keyword Column", df.columns, key="intent_col")
+        target_col = st.selectbox("Keyword Column", df.columns, key="intent_col", 
+                                  help="Select the column that contains the actual search queries.")
         
-        if st.button("Run Intent Classification"):
+        if st.button("Run Intent Classification", help="Starts the AI classification for Search Intent and Funnel stage."):
             if not api_key:
                 st.error("Missing API Key.")
             else:
@@ -212,7 +241,8 @@ if page == "1. Intent Classifier":
                     
                     st.success("Complete!")
                     st.dataframe(df)
-                    st.download_button("📥 Download Intent Results", df.to_csv(index=False), "intent_results.csv", "text/csv")
+                    st.download_button("📥 Download Intent Results", df.to_csv(index=False), "intent_results.csv", "text/csv", 
+                                       help="Download the results to use in Step 2.")
 
 else:
     st.title("Step 2: Custom Topic Mapper")
@@ -221,17 +251,21 @@ else:
     with st.sidebar:
         st.markdown("---")
         st.write("### Classification Strategy")
-        st.session_state.topics = st.text_area("Primary Topics", value=st.session_state.topics, height=150)
-        st.session_state.subtopics = st.text_area("Subtopics (Optional)", value=st.session_state.subtopics, height=150)
+        st.session_state.topics = st.text_area("Primary Topics", value=st.session_state.topics, height=150, 
+                                               help="Enter primary topics here, one per line. These act as your 'buckets'.")
+        st.session_state.subtopics = st.text_area("Subtopics (Optional)", value=st.session_state.subtopics, height=150, 
+                                                  help="Enter subtopics here, one per line. These provide more granular mapping.")
 
-    uploaded_file = st.file_uploader("Upload Intent CSV", type=["csv"], key="topic_upload")
+    uploaded_file = st.file_uploader("Upload Intent CSV", type=["csv"], key="topic_upload", 
+                                     help="Upload the file you exported from the Intent Classifier.")
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
-        target_col = st.selectbox("Keyword Column", df.columns, key="topic_col")
+        target_col = st.selectbox("Keyword Column", df.columns, key="topic_col", 
+                                  help="Select the keyword column to map against your custom topics.")
         
         col1, col2 = st.columns([1, 1])
         with col1:
-            if st.button("✨ Generate AI Suggestions"):
+            if st.button("✨ Generate AI Suggestions", help="AI scans your keywords and suggests relevant topics/subtopics based on your niche."):
                 if not api_key: st.error("Missing API Key.")
                 else:
                     with st.spinner("Analysing sample..."):
@@ -239,7 +273,7 @@ else:
                         sample = pd.Series(unique_kws).sample(n=min(80, len(unique_kws))).tolist()
                         st.session_state.ai_suggestions = suggest_topics(sample, api_key)
         with col2:
-            if st.button("🗑️ Clear Suggestions"):
+            if st.button("🗑️ Clear Suggestions", help="Clears the AI suggested text."):
                 st.session_state.ai_suggestions = ""
                 st.rerun()
 
@@ -247,7 +281,7 @@ else:
             st.code(st.session_state.ai_suggestions)
             st.caption("Copy these into the sidebar fields.")
 
-        if st.button("Run Topic Mapping"):
+        if st.button("Run Topic Mapping", help="Maps all keywords in your file to the topics and subtopics provided in the sidebar."):
             if not api_key: st.error("Missing API Key.")
             elif not st.session_state.topics: st.error("Provide topics in the sidebar.")
             else:
@@ -265,4 +299,5 @@ else:
                     
                     st.success("Complete!")
                     st.dataframe(df)
-                    st.download_button("📥 Download Final Results", df.to_csv(index=False), "final_seo_results.csv", "text/csv")
+                    st.download_button("📥 Download Final Results", df.to_csv(index=False), "final_seo_results.csv", "text/csv", 
+                                       help="Download your fully classified keyword report.")
