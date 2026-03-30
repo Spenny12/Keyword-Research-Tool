@@ -50,9 +50,14 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
     }
     
     if response_schema:
-        # Prompt model to return JSON matching the schema
+        # Simplified instruction for local models
         payload["format"] = "json"
-        payload["messages"][0]["content"] += f" Return the data as a JSON object matching this schema: {response_schema.model_json_schema()}"
+        if "Intent" in str(response_schema):
+            example = '{"results": [{"idx": 0, "i": "1", "f": "A"}]}'
+        else:
+            example = '{"results": [{"idx": 0, "t": "Topic", "s": "Subtopic"}]}'
+        
+        payload["messages"][0]["content"] += f" Return a JSON object with a 'results' key. Example: {example}"
 
     try:
         # Explicitly bypass proxies for local connections
