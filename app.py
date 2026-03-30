@@ -245,7 +245,7 @@ engine_config = {}
 if engine == "Gemini":
     engine_config["api_key"] = st.sidebar.text_input("Gemini API Key", type="password", help="Enter your Google Gemini API Key. Speak to Tom if you don't have one.")
 else:
-    engine_config["url"] = st.sidebar.text_input("Ollama URL", value="http://localhost:11434", help="Local address of your Ollama server.")
+    engine_config["url"] = st.sidebar.text_input("Ollama URL", value="http://127.0.0.1:11434", help="Local address of your Ollama server.")
     engine_config["model"] = st.sidebar.text_input("Ollama Model", value="llama3", help="The model name installed in Ollama (e.g., llama3, mistral, gemma).")
 
 if page == "Readme":
