@@ -64,6 +64,10 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
         data = response.json()
         content = data.get("message", {}).get("content", "")
         
+        # Log to terminal for debugging (only seen in the .bat window)
+        print(f"--- OLLAMA DEBUG ({model}) ---")
+        print(f"Content: {content[:200]}...")
+        
         if response_schema:
             try:
                 # Try strict validation
@@ -85,9 +89,9 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
 def suggest_topics(sample_keywords, engine, config):
     system_instruction = "You are a technical SEO specialist. Output ONLY the requested blocks. Do not include any conversational text, introductions, or formatting like bolding or bullet points."
     prompt = f"""
-    Analyse these keywords and provide:
-    1. A list of primary TOPICS.
-    2. A list of deduplicated, concise SUBTOPIC 'stems' (up to 3 per topic).
+    Analyse these keywords and provide a comprehensive and diverse list of:
+    1. Primary TOPICS.
+    2. Deduplicated, concise SUBTOPIC 'stems' (up to 5 per topic).
 
     Keywords:
     {'\n'.join(sample_keywords)}
@@ -103,10 +107,10 @@ def suggest_topics(sample_keywords, engine, config):
     (Subtopic Stem 3)
 
     Rules:
-    - No descriptions or colon-separated lists for subtopics. 
+    - Focus on high-level SEO themes for Topics.
+    - Focus on granular user intent/product variations for Subtopics.
     - One per line.
-    - No bolding.
-    - No introductory text.
+    - No descriptions, no colons, no bolding, no introductory text.
     """
     
     try:
