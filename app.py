@@ -71,8 +71,9 @@ def suggest_topics(sample_keywords, api_key):
 def process_batches(keywords, api_key, mode, topics="", subtopics=""):
     client = genai.Client(api_key=api_key)
     model_id = "gemini-3-flash-preview"
-    batch_size = 100 
-    max_workers = 10 
+    # Reduced batch size and workers for higher stability
+    batch_size = 50 
+    max_workers = 5 
     
     intent_map = {
         "1": "definition/factual", "2": "examples/list", "3": "comparison/pros-cons",
@@ -88,7 +89,7 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
     else:
         c_topics = ",".join([t.strip() for t in topics.split("\n") if t.strip()])
         c_subtopics = ",".join([s.strip() for s in subtopics.split("\n") if s.strip()])
-        system_instruction = f"Classify keywords into Topics: [{c_topics}] and Subtopics: [{c_subtopics}]. Use exact matches if possible. Output JSON."
+        system_instruction = f"Classify keywords into Topics: [{c_topics}] and Subtopics: [{c_subtopics}]. Return ONLY the Topic and Subtopic names exactly as provided in the lists. Output JSON."
         schema = TopicBatchResponse
 
     # Context Caching
@@ -109,13 +110,16 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
 
     while any(s["status"] in ["pending", "retry_skip"] for s in keyword_status):
         to_process = [s for s in keyword_status if s["status"] in ["pending", "retry_skip"]]
-        if not to_process or pass_count > 15: break
-        if pass_count > 1: time.sleep(1)
+        if not to_process or pass_count > 10: break # Lower max passes to avoid long hangs
+        
+        # Incremental delay between passes to allow API to breathe
+        time.sleep(min(pass_count * 2, 10))
 
         chunks = [to_process[i : i + batch_size] for i in range(0, len(to_process), batch_size)]
         total_chunks = len(chunks)
         completed_chunks = 0
-        status_text.text(f"Pass {pass_count}: Processing {len(to_process)} keywords...")
+        
+        status_text.text(f"Pass {pass_count}: Processing {len(to_process)} keywords in {total_chunks} chunks...")
 
         def process_chunk(chunk):
             mapping = {idx: item["id"] for idx, item in enumerate(chunk)}
@@ -151,29 +155,39 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
                     if item:
                         chunk_results.append({"global_id": global_idx, "data": item, "new_status": "completed"})
                     else:
-                        new_status = "failed_permanent" if keyword_status[global_idx]["status"] == "retry_skip" else "retry_skip"
+                        # If model fails to return data for a specific keyword, retry once then fail
+                        curr = keyword_status[global_idx]["status"]
+                        new_status = "failed_permanent" if curr == "retry_skip" else "retry_skip"
                         chunk_results.append({"global_id": global_idx, "data": None, "new_status": new_status})
             except Exception as e:
                 error_msg = str(e).lower()
-                is_server_error = any(code in error_msg for code in ["503", "500", "504", "overloaded", "deadline", "timeout"])
+                is_server_error = any(code in error_msg for code in ["503", "500", "504", "overloaded", "deadline", "timeout", "quota", "429"])
                 for item in chunk:
+                    global_idx = item["id"]
+                    curr = keyword_status[global_idx]["status"]
+                    # If it's a server error, we mark it as retry_skip to try again in next pass
+                    new_status = "retry_skip" if is_server_error else "failed_permanent"
                     chunk_results.append({
-                        "global_id": item["id"], 
+                        "global_id": global_idx, 
                         "data": None, 
-                        "new_status": keyword_status[item["id"]]["status"] if is_server_error else "failed_permanent"
+                        "new_status": new_status
                     })
             return chunk_results
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Longer timeout for individual chunks (180s)
             futures = [executor.submit(process_chunk, c) for c in chunks]
             for future in as_completed(futures):
                 try:
-                    for res in future.result(timeout=120):
+                    chunk_out = future.result(timeout=180)
+                    for res in chunk_out:
                         g_id = res["global_id"]
                         if res["new_status"] in ["completed", "failed_permanent"]:
                             final_results[g_id] = res["data"]
                         keyword_status[g_id]["status"] = res["new_status"]
-                except Exception: pass 
+                except Exception:
+                    # If the entire future times out or fails, mark keywords as retry
+                    pass 
                 completed_chunks += 1
                 progress_bar.progress(min(completed_chunks / total_chunks, 1.0))
         pass_count += 1
@@ -187,7 +201,7 @@ page = st.sidebar.radio("Go to", ["Readme", "1. Intent Classifier", "2. Topic Ma
 api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Enter your Google Gemini API Key. Speak to Tom if you don't have one.")
 
 if page == "Readme":
-    st.title("How to Use This Tool")
+    st.title("📖 How to Use This Tool")
     st.markdown("""
     ### Workflow Overview
     Follow these steps to classify your keywords accurately and efficiently:
@@ -211,6 +225,7 @@ if page == "Readme":
         *   Run the Topic Mapper.
         *   Export the final results for your report.
     """)
+    st.info("💡 **Pro Tip:** Splitting the process into two steps ensures higher accuracy and prevents timeouts on large datasets.")
 
 elif page == "1. Intent Classifier":
     st.title("Step 1: Intent & Funnel Classifier")
@@ -240,7 +255,7 @@ elif page == "1. Intent Classifier":
                     
                     st.success("Complete!")
                     st.dataframe(df)
-                    st.download_button("Download Intent Results", df.to_csv(index=False), "intent_results.csv", "text/csv",
+                    st.download_button("📥 Download Intent Results", df.to_csv(index=False), "intent_results.csv", "text/csv", 
                                        help="Download the results to use in Step 2.")
 
 else:
@@ -272,7 +287,7 @@ else:
                         sample = pd.Series(unique_kws).sample(n=min(80, len(unique_kws))).tolist()
                         st.session_state.ai_suggestions = suggest_topics(sample, api_key)
         with col2:
-            if st.button("Clear Suggestions", help="Clears the AI suggested text."):
+            if st.button("🗑️ Clear Suggestions", help="Clears the AI suggested text."):
                 st.session_state.ai_suggestions = ""
                 st.rerun()
 
@@ -298,5 +313,5 @@ else:
                     
                     st.success("Complete!")
                     st.dataframe(df)
-                    st.download_button("Download Final Results", df.to_csv(index=False), "final_seo_results.csv", "text/csv",
+                    st.download_button("📥 Download Final Results", df.to_csv(index=False), "final_seo_results.csv", "text/csv", 
                                        help="Download your fully classified keyword report.")
