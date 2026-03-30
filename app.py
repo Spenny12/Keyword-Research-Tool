@@ -148,7 +148,23 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
                         else:
                             data = {"Topic": item.t, "Subtopic": item.s}
                         chunk_out.append((g_idx, data))
-        except Exception: pass
+            else:
+                # Log if parsing was successful but results were empty
+                print(f"Empty results for chunk starting with global index {chunk[0][0]}")
+        except Exception as e:
+            # Descriptive error for debugging
+            err_type = type(e).__name__
+            err_msg = str(e)
+            print(f"CRITICAL: Chunk error in {mode} mode: [{err_type}] {err_msg}")
+            
+            # Return specific error info to the UI for at least one item in the chunk
+            for global_idx, kw in chunk:
+                error_data = {
+                    "Intent": f"ERR: {err_type}", "Funnel": "N/A"
+                } if mode == "intent" else {
+                    "Topic": f"ERR: {err_type}", "Subtopic": "N/A"
+                }
+                chunk_out.append((global_idx, error_data))
         return chunk_out
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
