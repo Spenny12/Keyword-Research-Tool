@@ -50,35 +50,28 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
     }
     
     if response_schema:
-        # Simplified instruction for local models
         payload["format"] = "json"
         if "Intent" in str(response_schema):
             example = '{"results": [{"idx": 0, "i": "1", "f": "A"}, {"idx": 1, "i": "5", "f": "T"}]}'
         else:
             example = '{"results": [{"idx": 0, "t": "Topic", "s": "Subtopic"}, {"idx": 1, "t": "Topic", "s": "Subtopic"}]}'
-        
         payload["messages"][0]["content"] += f" Return a JSON object with a 'results' key. YOU MUST INCLUDE THE 'idx' FOR EVERY ITEM. Example: {example}"
 
     try:
-        # Explicitly bypass proxies for local connections
         session = requests.Session()
         session.trust_env = False 
-        
         response = session.post(f"{url}/api/chat", json=payload, timeout=120)
         response.raise_for_status()
         data = response.json()
         content = data.get("message", {}).get("content", "")
         
-        # Log to terminal for debugging (only seen in the .bat window)
         print(f"--- OLLAMA DEBUG ({model}) ---")
         print(f"Content: {content[:200]}...")
         
         if response_schema:
             try:
-                # Try strict validation
                 return response_schema.model_validate_json(content)
             except Exception:
-                # Fallback: Try to find a JSON-like block if validation fails
                 try:
                     import re
                     json_match = re.search(r'\{.*\}', content, re.DOTALL)
@@ -92,7 +85,6 @@ def call_ollama(prompt, system_instruction, model, url, response_schema=None):
 
 # --- Logic: Topic Suggester ---
 def suggest_topics(sample_keywords, engine, config):
-    # Differentiate instructions for Gemini vs Ollama to balance cost/detail
     if engine == "Gemini":
         system_instruction = "You are a technical SEO specialist. Provide a CONCISE list of topics. Output ONLY the requested blocks."
         limit_text = "Aim for a maximum of 5 primary TOPICS and up to 3 subtopics per topic."
@@ -143,7 +135,7 @@ def suggest_topics(sample_keywords, engine, config):
 def process_batches(keywords, engine, config, mode, topics="", subtopics=""):
     model_id = "gemini-3-flash-preview"
     batch_size = 50 if engine == "Gemini" else 10
-    max_workers = 5 if engine == "Gemini" else 1 # Local Ollama should be sequential for stability
+    max_workers = 5 if engine == "Gemini" else 1
     
     intent_map = {
         "1": "definition/factual", "2": "examples/list", "3": "comparison/pros-cons",
@@ -162,7 +154,6 @@ def process_batches(keywords, engine, config, mode, topics="", subtopics=""):
         system_instruction = f"Classify keywords into Topics: [{c_topics}] and Subtopics: [{c_subtopics}]. Return ONLY the Topic and Subtopic names exactly as provided in the lists. Output JSON."
         schema = TopicBatchResponse
 
-    # Context Caching (Gemini only)
     cache = None
     if engine == "Gemini":
         try:
@@ -174,30 +165,34 @@ def process_batches(keywords, engine, config, mode, topics="", subtopics=""):
         except Exception: pass
 
     final_results = [None] * len(keywords)
-    keyword_status = [{"id": i, "kw": kw, "status": "pending"} for i, kw in enumerate(keywords)]
+    # 0: pending, 1: completed, 2: failed_permanent, 3: retry_skip
+    keyword_status = [0] * len(keywords)
     
-    pass_count = 1
     status_text = st.empty()
-    progress_bar = st.progress(0)
+    progress_bar = st.progress(0.0)
 
-    while any(s["status"] in ["pending", "retry_skip"] for s in keyword_status):
-        to_process = [s for s in keyword_status if s["status"] in ["pending", "retry_skip"]]
-        if not to_process or pass_count > 10: break
+    for pass_count in range(1, 11):
+        to_process_indices = [i for i, status in enumerate(keyword_status) if status in [0, 3]]
+        if not to_process_indices: break
         
         if pass_count > 1:
             time.sleep(min(pass_count * 2, 10))
 
-        chunks = [to_process[i : i + batch_size] for i in range(0, len(to_process), batch_size)]
+        chunks = []
+        for i in range(0, len(to_process_indices), batch_size):
+            chunk_indices = to_process_indices[i : i + batch_size]
+            chunks.append([(idx, keywords[idx]) for idx in chunk_indices])
+
         total_chunks = len(chunks)
         completed_chunks = 0
-        
-        status_text.text(f"Pass {pass_count}: Processing {len(to_process)} keywords using {engine}...")
+        status_text.text(f"Pass {pass_count}: Processing {len(to_process_indices)} keywords using {engine}...")
 
         def process_chunk(chunk):
-            mapping = {idx: item["id"] for idx, item in enumerate(chunk)}
-            formatted = "\n".join([f"{idx}|{item['kw']}" for idx, item in enumerate(chunk)])
-            chunk_results = []
+            chunk_out = []
             try:
+                formatted = "\n".join([f"{idx_in_batch}|{kw}" for idx_in_batch, (global_idx, kw) in enumerate(chunk)])
+                mapping = {idx_in_batch: global_idx for idx_in_batch, (global_idx, kw) in enumerate(chunk)}
+                
                 if engine == "Gemini":
                     client = genai.Client(api_key=config["api_key"])
                     res = client.models.generate_content(
@@ -219,45 +214,37 @@ def process_batches(keywords, engine, config, mode, topics="", subtopics=""):
                 if parsed and parsed.results:
                     for item in parsed.results:
                         if mode == "intent":
-                            batch_data[item.idx] = {
-                                "Intent": intent_map.get(item.i, "unclear"), 
-                                "Funnel": funnel_map.get(item.f.upper(), "Awareness")
-                            }
+                            batch_data[item.idx] = {"Intent": intent_map.get(item.i, "unclear"), "Funnel": funnel_map.get(item.f.upper(), "Awareness")}
                         else:
                             batch_data[item.idx] = {"Topic": item.t, "Subtopic": item.s}
                 
-                for idx in range(len(chunk)):
-                    global_idx = mapping[idx]
-                    item = batch_data.get(idx)
-                    if item:
-                        chunk_results.append({"global_id": global_idx, "data": item, "new_status": "completed"})
+                for idx_in_batch in range(len(chunk)):
+                    g_idx = mapping[idx_in_batch]
+                    data = batch_data.get(idx_in_batch)
+                    if data:
+                        chunk_out.append((g_idx, data, 1)) # completed
                     else:
-                        curr = keyword_status[global_idx]["status"]
-                        new_status = "failed_permanent" if curr == "retry_skip" else "retry_skip"
-                        chunk_results.append({"global_id": global_idx, "data": None, "new_status": new_status})
+                        new_status = 2 if keyword_status[g_idx] == 3 else 3
+                        chunk_out.append((g_idx, None, new_status))
             except Exception as e:
                 error_msg = str(e).lower()
                 is_server_error = any(code in error_msg for code in ["503", "500", "504", "overloaded", "deadline", "timeout", "quota", "429"])
-                for item in chunk:
-                    global_idx = item["id"]
-                    new_status = "retry_skip" if is_server_error else "failed_permanent"
-                    chunk_results.append({"global_id": global_idx, "data": None, "new_status": new_status})
-            return chunk_results
+                for global_idx, kw in chunk:
+                    new_status = 3 if is_server_error else 2
+                    chunk_out.append((global_idx, None, new_status))
+            return chunk_out
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(process_chunk, c) for c in chunks]
             for future in as_completed(futures):
                 try:
-                    chunk_out = future.result(timeout=180)
-                    for res in chunk_out:
-                        g_id = res["global_id"]
-                        if res["new_status"] in ["completed", "failed_permanent"]:
-                            final_results[g_id] = res["data"]
-                        keyword_status[g_id]["status"] = res["new_status"]
-                except Exception: pass 
+                    for g_idx, data, new_status in future.result(timeout=180):
+                        if data is not None:
+                            final_results[g_idx] = data
+                        keyword_status[g_idx] = new_status
+                except Exception: pass
                 completed_chunks += 1
                 progress_bar.progress(min(completed_chunks / total_chunks, 1.0))
-        pass_count += 1
 
     default_data = {"Intent": "error", "Funnel": "N/A"} if mode == "intent" else {"Topic": "error", "Subtopic": "error"}
     return [r if r is not None else default_data for r in final_results]
@@ -295,7 +282,7 @@ if page == "Readme":
         *   Generate AI Suggestions (optional) to build your strategy.
         *   Run Topic Mapping and export the final report.
     """)
-    st.info("💡 **Ollama Tip:** Local models can be slower and depend on your PC hardware. For large files (1,000+ keywords), Gemini is generally recommended.")
+    st.info("💡 **Pro Tip:** Splitting the process into two steps ensures higher accuracy and prevents timeouts on large datasets.")
 
 elif page == "1. Intent Classifier":
     st.title("Step 1: Intent & Funnel Classifier")
@@ -347,7 +334,8 @@ else:
                 else:
                     with st.spinner("Analysing sample..."):
                         unique_kws = [kw for kw in df[target_col].astype(str).unique() if kw.strip().lower() not in ['nan', 'null', '']]
-                        sample = pd.Series(unique_kws).sample(n=min(80, len(unique_kws))).tolist()
+                        sample_size = 200 if engine == "Ollama" else 150
+                        sample = pd.Series(unique_kws).sample(n=min(sample_size, len(unique_kws))).tolist()
                         st.session_state.ai_suggestions = suggest_topics(sample, engine, engine_config)
         with col2:
             if st.button("🗑️ Clear Suggestions"):
