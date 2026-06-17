@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -13,14 +13,14 @@ st.set_page_config(page_title="SEO Classifier", layout="wide")
 
 # --- Structured Output Definitions ---
 class IntentResult(BaseModel):
-    idx: int
-    i: str  # intent code
-    f: str  # funnel code
+    idx: int = Field(description="The exact index number provided in the prompt")
+    intent: str = Field(default="10", description="The numeric intent code (e.g., '1', '2')")
+    funnel: str = Field(default="A", description="The single-letter funnel code (e.g., 'A', 'C', 'T')")
 
 class TopicResult(BaseModel):
-    idx: int
-    t: str # topic
-    s: str # subtopic
+    idx: int = Field(description="The exact index number provided in the prompt")
+    topic: str = Field(default="N/A", description="The assigned primary topic exactly as provided")
+    subtopic: str = Field(default="N/A", description="The assigned subtopic, or 'N/A' if none fit")
 
 class IntentBatchResponse(BaseModel):
     results: List[IntentResult]
@@ -65,7 +65,7 @@ def suggest_topics(sample_keywords, api_key):
     - One per line.
     - No descriptions, no colons, no bolding, no introductory text.
     """
-    
+
     try:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
@@ -80,11 +80,11 @@ def suggest_topics(sample_keywords, api_key):
 # --- Logic: Batch Processing ---
 def process_batches(keywords, api_key, mode, topics="", subtopics=""):
     model_id = "gemini-3.1-flash-lite-preview"
-    # Smaller batch size for more stability
-    batch_size = 100
+    # Reduced batch size to 50 to prevent Pydantic validation cut-offs
+    batch_size = 50
     # Lower concurrency to avoid 500/503 errors
     max_workers = 2
-    
+
     intent_map = {
         "1": "definition/factual", "2": "examples/list", "3": "comparison/pros-cons",
         "4": "asset/download/tool", "5": "product/service", "6": "instruction/how-to",
@@ -115,17 +115,17 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
         return []
 
     final_results = [None] * len(keywords)
-    
+
     status_text = st.empty()
     progress_bar = st.progress(0.0)
-    
+
     chunks = []
     for i in range(0, len(keywords), batch_size):
         chunks.append([(j, keywords[j]) for j in range(i, min(i + batch_size, len(keywords)))])
 
     total_chunks = len(chunks)
     completed_chunks = 0
-    
+
     def process_chunk(chunk):
         chunk_out = []
         formatted = "\n".join([f"{idx_in_batch}|{kw}" for idx_in_batch, (global_idx, kw) in enumerate(chunk)])
@@ -156,9 +156,12 @@ def process_batches(keywords, api_key, mode, topics="", subtopics=""):
                         g_idx = mapping.get(item.idx)
                         if g_idx is not None:
                             if mode == "intent":
-                                data = {"Intent": intent_map.get(item.i, "unclear"), "Funnel": funnel_map.get(item.f.upper(), "Awareness")}
+                                # Safely cast to string to prevent integer typing validation issues
+                                safe_intent = str(item.intent).strip()
+                                safe_funnel = str(item.funnel).strip().upper()
+                                data = {"Intent": intent_map.get(safe_intent, "unclear"), "Funnel": funnel_map.get(safe_funnel, "Awareness")}
                             else:
-                                data = {"Topic": item.t, "Subtopic": item.s}
+                                data = {"Topic": item.topic, "Subtopic": item.subtopic}
                             chunk_out.append((g_idx, data))
                     return chunk_out # Success!
             except Exception as e:
@@ -200,7 +203,7 @@ st.sidebar.markdown("---")
 api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Enter your Google Gemini API Key. Speak to Tom if you don't have one.")
 
 if page == "Readme":
-    st.title("📖 How to Use This Tool")
+    st.title("💡 How to Use This Tool")
     st.markdown("""
     ### Workflow Overview
     Follow these steps to classify your keywords accurately and efficiently:
@@ -208,27 +211,27 @@ if page == "Readme":
     1.  **Gather Keywords:** Prepare a clean list of search queries in a `.csv` file. Remove unnecessary data like search volumes to keep it simple.
     2.  **API Keys:** Speak to Tom to obtain a valid Gemini API key.
     3.  **Step 1 - Intent Classification:**
-        *   Navigate to **'1. Intent Classifier'**.
-        *   Upload your CSV and select the keyword column.
-        *   Run the classifier and download `intent_results.csv`.
+        * Navigate to **'1. Intent Classifier'**.
+        * Upload your CSV and select the keyword column.
+        * Run the classifier and download `intent_results.csv`.
     4.  **Step 2 - Topic Mapping:**
-        *   Navigate to **'2. Topic Mapper'**.
-        *   Upload the file from Step 1.
-        *   **Generate AI Suggestions** (optional) to build your strategy.
-        *   Review and edit the topics in the sidebar.
-        *   Run Topic Mapping and export the final report.
+        * Navigate to **'2. Topic Mapper'**.
+        * Upload the file from Step 1.
+        * **Generate AI Suggestions** (optional) to build your strategy.
+        * Review and edit the topics in the sidebar.
+        * Run Topic Mapping and export the final report.
     """)
-    st.info("💡 **Pro Tip:** Splitting the process into two steps ensures higher accuracy and prevents timeouts on large datasets.")
+    st.info("🎯 **Pro Tip:** Splitting the process into two steps ensures higher accuracy and prevents timeouts on large datasets.")
 
 elif page == "1. Intent Classifier":
     st.title("Step 1: Intent & Funnel Classifier")
     st.info("Classify Search Intent and Marketing Funnel stage using Gemini AI.")
-    
+
     uploaded_file = st.file_uploader("Upload Keyword CSV", type=["csv"], key="intent_upload")
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         target_col = st.selectbox("Keyword Column", df.columns, key="intent_col")
-        
+
         if st.button("Run Intent Classification"):
             if not api_key:
                 st.error("Missing Gemini API Key.")
@@ -237,21 +240,21 @@ elif page == "1. Intent Classifier":
                     raw_kws = df[target_col].astype(str).tolist()
                     unique_kws = list(dict.fromkeys([kw for kw in raw_kws if kw.strip() and kw.lower() != 'nan']))
                     results = process_batches(unique_kws, api_key, mode="intent")
-                    
+
                     results_map = dict(zip(unique_kws, results))
                     final_results = [results_map.get(kw, {"Intent": "N/A", "Funnel": "N/A"}) for kw in raw_kws]
-                    
+
                     res_df = pd.DataFrame(final_results)
                     df['Intent'], df['Funnel'] = res_df['Intent'], res_df['Funnel']
-                    
+
                     st.success("Complete!")
                     st.dataframe(df)
-                    st.download_button("📥 Download Intent Results", df.to_csv(index=False), "intent_results.csv", "text/csv")
+                    st.download_button("⬇️ Download Intent Results", df.to_csv(index=False), "intent_results.csv", "text/csv")
 
 else:
     st.title("Step 2: Custom Topic Mapper")
     st.info("Add custom Topic and Subtopic categorisation using your predefined strategy.")
-    
+
     with st.sidebar:
         st.markdown("---")
         st.write("### Classification Strategy")
@@ -262,7 +265,7 @@ else:
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         target_col = st.selectbox("Keyword Column", df.columns, key="topic_col")
-        
+
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.button("✨ Generate AI Suggestions"):
@@ -287,15 +290,15 @@ else:
                 with st.spinner("Mapping topics..."):
                     raw_kws = df[target_col].astype(str).tolist()
                     unique_kws = list(dict.fromkeys([kw for kw in raw_kws if kw.strip() and kw.lower() != 'nan']))
-                    results = process_batches(unique_kws, api_key, mode="topic", 
+                    results = process_batches(unique_kws, api_key, mode="topic",
                                            topics=st.session_state.topics, subtopics=st.session_state.subtopics)
-                    
+
                     results_map = dict(zip(unique_kws, results))
                     final_results = [results_map.get(kw, {"Topic": "N/A", "Subtopic": "N/A"}) for kw in raw_kws]
-                    
+
                     res_df = pd.DataFrame(final_results)
                     df['Topic'], df['Subtopic'] = res_df['Topic'], res_df['Subtopic']
-                    
+
                     st.success("Complete!")
                     st.dataframe(df)
-                    st.download_button("📥 Download Final Results", df.to_csv(index=False), "final_seo_results.csv", "text/csv")
+                    st.download_button("⬇️ Download Final Results", df.to_csv(index=False), "final_seo_results.csv", "text/csv")
