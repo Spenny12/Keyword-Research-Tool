@@ -69,7 +69,7 @@ def suggest_topics(sample_keywords, api_key):
     try:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-3.5-flash",
+            model="gemini-3.1-flash-lite",
             config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.0),
             contents=prompt
         )
@@ -79,7 +79,7 @@ def suggest_topics(sample_keywords, api_key):
 
 # --- Logic: Batch Processing ---
 def process_batches(keywords, api_key, mode, topics="", subtopics=""):
-    model_id = "gemini-3.5-flash"
+    model_id = "gemini-3.1-flash-lite"
     # Reduced batch size to 50 to prevent Pydantic validation cut-offs
     batch_size = 50
     # Lower concurrency to avoid 500/503 errors
